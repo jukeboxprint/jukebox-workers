@@ -1,0 +1,56 @@
+# Reusable: makes sure every D1 database the repo's tomls name exists (live and staging names), creating any that are
+# missing, and prints their ids for the PR that writes them into wrangler.toml. Creating an empty database changes no
+# Worker; migrations run in Worker deploy. Uses the staging environment's token (the repo's own, D1 Edit).
+# Caller: on push to main touching workers/*/migrations/**, and workflow_dispatch;
+#   uses: jukeboxprint/jukebox-workers/.github/workflows/worker-d1.yml@<sha>
+#   with: { pipeline_ref: <sha>, environment_staging: <area>-staging }
+#   secrets: inherit
+name: Worker D1 (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pipeline_ref: { type: string, required: true }
+      environment_staging: { type: string, required: true }
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ensure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.ref == 'refs/heads/main' }}
+    environment: ${{ inputs.environment_staging }}
+    concurrency:
+      group: ${{ github.repository }}-d1
+      cancel-in-progress: false
+    env:
+      JBX_REPO_ROOT: ${{ github.workspace }}
+      P: ${{ github.workspace }}/.jbx-pipeline
+      REPO_NAME: ${{ github.repository }}
+      WORKER_NAME_EXCEPTIONS: ${{ vars.WORKER_NAME_EXCEPTIONS }}
+      CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { repository: jukeboxprint/jukebox-workers, ref: '${{ inputs.pipeline_ref }}', path: .jbx-pipeline, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22' }
+      - run: npm ci && (cd "$P" && npm ci)
+      - run: node "$P/scripts/worker/repo.mjs" check
+      - name: Databases exist (created if missing); ids
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          : > d1.ndjson
+          for w in $(node "$P/scripts/worker/repo.mjs" list | jq -r '.[]'); do
+            node "$P/scripts/worker/d1.mjs" --worker "$w" --ensure | tee -a d1.ndjson
+          done
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          { echo "### D1"; echo '```'; cat d1.ndjson 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

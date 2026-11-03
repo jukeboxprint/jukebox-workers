@@ -1,0 +1,36 @@
+# jukebox-workers' own checks, on every PR (required on main): the public guard (no secrets, ids, emails or private
+# hosts: this repo is public), every workflow file parses, every script parses, package typecheck and tests, and the
+# repo check against a small fixture caller.
+name: Pipeline CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Pipeline CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - name: Public guard
+        run: node scripts/ci/public_guard.mjs
+      - name: Workflow files parse
+        run: pip install --quiet pyyaml==6.0.2 && python3 scripts/ci/check_workflows.py .github/workflows
+      - name: Scripts parse
+        run: for f in scripts/door/*.mjs scripts/worker/*.mjs scripts/ci/*.mjs; do node --check "$f"; done
+      - run: npm run typecheck
+      - run: npm test

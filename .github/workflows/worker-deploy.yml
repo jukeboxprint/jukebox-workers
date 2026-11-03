@@ -1,0 +1,237 @@
+# Reusable: Worker deploy (docs/PATTERN.md section 5). Staging on merge for each Worker whose release.json or
+# wrangler.toml changed, when <DIR>_STAGING = on. Live ONLY from a hand-started run of the caller's Deploy with
+# go_live ticked, for one Worker, when <DIR>_LIVE = on, on Tyler's word. Merging never deploys live.
+# A caller's .github/workflows/deploy.yml:
+#   on:
+#     push: { branches: [main], paths: ['workers/*/release.json', 'workers/*/wrangler.toml'] }
+#     workflow_dispatch:
+#       inputs:
+#         worker:  { type: string, required: true, description: 'Folder under workers/' }
+#         go_live: { type: boolean, default: false, description: 'Go live after staging passes (this run is your approval)' }
+#         skip_staging: { type: boolean, default: false, description: 'Allowed only while <DIR>_STAGING is not on' }
+#         bootstrap_staging: { type: boolean, default: false, description: 'Durable Object Worker: first staging deploy' }
+#   jobs:
+#     deploy:
+#       uses: jukeboxprint/jukebox-workers/.github/workflows/worker-deploy.yml@<sha>   # vX.Y.Z
+#       with: { pipeline_ref: <sha>, environment_staging: <area>-staging, environment_live: <area>-live,
+#               worker: '${{ inputs.worker }}', go_live: '${{ inputs.go_live || false }}', ... }
+#       secrets: inherit
+# Environments hold CLOUDFLARE_API_TOKEN (the repo's own token; live: main only). Never repository or org secrets.
+name: Worker deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pipeline_ref: { type: string, required: true }
+      environment_staging: { type: string, required: true }
+      environment_live: { type: string, required: true }
+      worker: { type: string, default: '' }
+      go_live: { type: boolean, default: false }
+      skip_staging: { type: boolean, default: false }
+      bootstrap_staging: { type: boolean, default: false }
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  JBX_REPO_ROOT: ${{ github.workspace }}
+  P: ${{ github.workspace }}/.jbx-pipeline
+  REPO_NAME: ${{ github.repository }}
+  WORKER_NAME_EXCEPTIONS: ${{ vars.WORKER_NAME_EXCEPTIONS }}
+  CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      workers: ${{ steps.plan.outputs.workers }}
+      one: ${{ steps.plan.outputs.one }}
+      switch: ${{ steps.plan.outputs.switch }}
+      version: ${{ steps.plan.outputs.version }}
+      live_timeout: ${{ steps.plan.outputs.live_timeout }}
+      live_on: ${{ steps.plan.outputs.live_on }}
+      staging_on: ${{ steps.plan.outputs.staging_on }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { repository: jukeboxprint/jukebox-workers, ref: '${{ inputs.pipeline_ref }}', path: .jbx-pipeline, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22' }
+      - run: npm ci && (cd "$P" && npm ci)
+      - name: Pins, pattern, and which Workers this run deploys
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          WANT_REF: ${{ inputs.pipeline_ref }}
+          WORKER: ${{ inputs.worker }}
+          ENV_S: ${{ inputs.environment_staging }}
+          ENV_L: ${{ inputs.environment_live }}
+          VARS: ${{ toJSON(vars) }}
+        run: |
+          node "$P/scripts/worker/repo.mjs" pins | tee pins.json; jq -e --arg w "$WANT_REF" '.ref == $w' pins.json
+          node "$P/scripts/worker/repo.mjs" check
+          if [ -z "$ENV_S" ] || [ "$ENV_S" = "$ENV_L" ]; then echo "environment_staging and environment_live must differ"; exit 1; fi
+          if [ "$EVENT" = "push" ]; then
+            ws="$(node "$P/scripts/worker/repo.mjs" changed "$BEFORE" "$GITHUB_SHA")"
+          else
+            node "$P/scripts/worker/repo.mjs" list | jq -e --arg w "$WORKER" 'index($w) != null' >/dev/null || { echo "worker '$WORKER' is not a folder under workers/"; exit 1; }
+            ws="$(jq -cn --arg w "$WORKER" '[$w]')"
+          fi
+          echo "workers=$ws" >> "$GITHUB_OUTPUT"
+          one="$(jq -r 'if length == 1 then .[0] else "" end' <<<"$ws")"
+          echo "one=$one" >> "$GITHUB_OUTPUT"
+          if [ -n "$one" ]; then
+            sw="$(node "$P/scripts/worker/repo.mjs" switch "$one")"
+            echo "switch=$sw" >> "$GITHUB_OUTPUT"
+            echo "live_on=$(jq -r --arg k "${sw}_LIVE" 'if .[$k] == "on" then "true" else "false" end' <<<"$VARS")" >> "$GITHUB_OUTPUT"
+            echo "staging_on=$(jq -r --arg k "${sw}_STAGING" 'if .[$k] == "on" then "true" else "false" end' <<<"$VARS")" >> "$GITHUB_OUTPUT"
+            echo "version=$(jq -r .version "workers/$one/release.json")" >> "$GITHUB_OUTPUT"
+            echo "live_timeout=$(jq '.rollout as $r | ([$r.steps_pct[] | select(. < 100)] | length) * $r.max_watch_minutes + $r.job_margin_minutes + 15' "workers/$one/pipeline.json")" >> "$GITHUB_OUTPUT"
+          else
+            echo "live_timeout=30" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${{ inputs.skip_staging }}" = true ] && [ "$(jq -r --arg k "$(node "$P/scripts/worker/repo.mjs" switch "${one:-x}")_STAGING" '.[$k] // ""' <<<"$VARS")" = on ]; then
+            echo "skip_staging is refused while this Worker's staging switch is on (run go_live alone: staging, then live)"; exit 1
+          fi
+          echo "deploying: $ws"
+      - name: Every Worker in this run - proof
+        env:
+          WS: ${{ steps.plan.outputs.workers }}
+        run: for w in $(jq -r '.[]' <<<"$WS"); do node "$P/scripts/door/proof.mjs" --worker "$w"; done
+
+  staging:
+    needs: plan
+    if: ${{ needs.plan.outputs.workers != '[]' && !inputs.skip_staging }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment_staging }}
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.plan.outputs.workers) }}
+    concurrency:
+      group: ${{ github.repository }}-${{ matrix.worker }}-staging
+      cancel-in-progress: false
+    env:
+      W: ${{ matrix.worker }}
+      SHA: ${{ github.sha }}
+      # Repository variables, read through env (never pasted into a script): <DIR>_STAGING is this Worker's switch
+      # (front-door -> FRONT_DOOR_STAGING). Missing = off.
+      VARS: ${{ toJSON(vars) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { fetch-depth: 0 }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { repository: jukeboxprint/jukebox-workers, ref: '${{ inputs.pipeline_ref }}', path: .jbx-pipeline, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22' }
+      - run: npm ci && (cd "$P" && npm ci)
+      - name: Is this Worker's staging switch on?
+        id: sw
+        run: |
+          s="$(node "$P/scripts/worker/repo.mjs" switch "$W")"
+          on="$(jq -r --arg k "${s}_STAGING" '.[$k] // ""' <<<"$VARS")"
+          echo "${s}_STAGING = ${on:-missing}"
+          echo "on=$([ "$on" = on ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version "workers/$W/release.json")" >> "$GITHUB_OUTPUT"
+          echo "kind=$(jq -r '.kind // "door"' "workers/$W/pipeline.json")" >> "$GITHUB_OUTPUT"
+      - if: ${{ steps.sw.outputs.on == 'true' }}
+        run: node "$P/scripts/door/dist.mjs" --worker "$W"
+      - name: Staging matches the repo (bindings, secret names, settings, workers.dev)
+        if: ${{ steps.sw.outputs.on == 'true' && !inputs.bootstrap_staging }}
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/door/drift.mjs" --worker "$W" --env staging
+      - name: D1 migrations on staging (if the toml names any)
+        if: ${{ steps.sw.outputs.on == 'true' }}
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/worker/d1.mjs" --worker "$W" --migrate --env staging
+      - name: Deploy to staging (or, bootstrap_staging, one full wrangler deploy for a Durable Object Worker)
+        if: ${{ steps.sw.outputs.on == 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VERSION: ${{ steps.sw.outputs.version }}
+          BOOT: ${{ inputs.bootstrap_staging }}
+        run: |
+          if [ "$BOOT" = true ]; then
+            node "$P/scripts/door/rollout.mjs" --worker "$W" --env staging --bootstrap --message "$W $VERSION bootstrap $SHA" --tag "$SHA"
+          else
+            node "$P/scripts/door/rollout.mjs" --worker "$W" --env staging --steps 100 --message "$W $VERSION $SHA" --tag "$SHA"
+          fi
+      - name: Smoke test staging (no secrets sent)
+        if: ${{ steps.sw.outputs.on == 'true' }}
+        env: { KIND: '${{ steps.sw.outputs.kind }}' }
+        run: |
+          if [ "$KIND" = passthrough ]; then node "$P/scripts/door/smoke_simple.mjs" --worker "$W" --env staging
+          elif [ -f "workers/$W/scripts/smoke.mjs" ]; then node "workers/$W/scripts/smoke.mjs" --env staging
+          else echo "kind $KIND needs workers/$W/scripts/smoke.mjs"; exit 1; fi
+      - if: ${{ steps.sw.outputs.on != 'true' }}
+        run: echo "staging switch off for $W - nothing deployed"
+
+  live:
+    needs: [plan, staging]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.go_live && !inputs.bootstrap_staging &&
+      github.ref == 'refs/heads/main' && needs.plan.outputs.one != '' &&
+      needs.plan.outputs.live_on == 'true' && needs.plan.result == 'success' &&
+      ((needs.staging.result == 'success' && needs.plan.outputs.staging_on == 'true') ||
+       (inputs.skip_staging && needs.plan.outputs.staging_on != 'true' && needs.staging.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.live_timeout) }}
+    environment: ${{ inputs.environment_live }}
+    concurrency:
+      group: ${{ github.repository }}-${{ needs.plan.outputs.one }}-live
+      cancel-in-progress: false
+    env:
+      W: ${{ needs.plan.outputs.one }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ github.sha }}
+      DOOR_JOB_TIMEOUT_MIN: ${{ needs.plan.outputs.live_timeout }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { fetch-depth: 0 }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { repository: jukeboxprint/jukebox-workers, ref: '${{ inputs.pipeline_ref }}', path: .jbx-pipeline, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22' }
+      - run: npm ci && (cd "$P" && npm ci)
+      - run: node "$P/scripts/door/dist.mjs" --worker "$W"
+      - name: Every release main ever named (drift accepts any of them as the live script)
+        run: |
+          : > known-shas.txt
+          for c in $(git log --format=%H -- "workers/$W/release.json"); do
+            git show "$c:workers/$W/release.json" | jq -r .sha256 >> known-shas.txt
+          done
+          wc -l < known-shas.txt
+      - name: Live matches the repo, and its script is a release (or, first deploy only, the placeholder)
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/door/drift.mjs" --worker "$W" --env live --known-shas known-shas.txt | tee drift-before.json
+      - name: D1 migrations on live (additive only; the old version keeps running)
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/worker/d1.mjs" --worker "$W" --migrate --env live
+      - name: Rollout (pipeline.json rollout), automatic rollback on a breach
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --message "$W $VERSION $SHA" --tag "$SHA" | tee rollout.ndjson
+      - name: Live script is now the release, byte for byte
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          node "$P/scripts/door/drift.mjs" --worker "$W" --env live | tee drift-after.json
+          jq -e '.deployed.is == "release"' drift-after.json
+      - name: "If failed or cancelled mid-rollout, put the old version back at 100%"
+        if: ${{ failure() || cancelled() }}
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: |
+          old="$(jq -r 'select(.step == "current") | .version' rollout.ndjson 2>/dev/null | head -1)"
+          if [ -z "$old" ]; then echo "rollout never started: nothing to restore"; exit 0; fi
+          node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --restore "$old"
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          { echo "### $W $VERSION"; echo '```'; cat drift-before.json rollout.ndjson drift-after.json 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

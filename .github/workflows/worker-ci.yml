@@ -1,0 +1,84 @@
+# Reusable: Worker CI for a caller repo (docs/PATTERN.md section 5). Offline: no secrets, no Cloudflare access.
+# A caller's .github/workflows/ci.yml:
+#   on: { pull_request: {}, workflow_dispatch: {} }
+#   jobs:
+#     ci:
+#       uses: jukeboxprint/jukebox-workers/.github/workflows/worker-ci.yml@<sha>   # vX.Y.Z
+#       with: { pipeline_ref: <the same sha> }
+# Checks: the repo follows the pattern (names, staging names, one account, pins), the caller's wrangler is the
+# pipeline's version, and for every Worker: proof (release = build of src/, byte for byte; upload form = the toml;
+# size and growth against the base), typecheck when the Worker has a tsconfig.json, its check.mjs and its tests.
+name: Worker CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pipeline_ref:
+        description: 'The jukebox-workers commit the caller pinned (must equal the uses: sha)'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # bash -eo pipefail
+
+jobs:
+  check:
+    name: Worker CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JBX_REPO_ROOT: ${{ github.workspace }}
+      P: ${{ github.workspace }}/.jbx-pipeline
+      REPO_NAME: ${{ github.repository }}
+      WORKER_NAME_EXCEPTIONS: ${{ vars.WORKER_NAME_EXCEPTIONS }}
+      CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: jukeboxprint/jukebox-workers
+          ref: ${{ inputs.pipeline_ref }}
+          path: .jbx-pipeline
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install the caller's and the pipeline's dependencies
+        run: |
+          npm ci
+          (cd "$P" && npm ci)
+      - name: The caller pins one jukebox-workers commit, and pipeline_ref is it
+        env:
+          WANT: ${{ inputs.pipeline_ref }}
+        run: |
+          node "$P/scripts/worker/repo.mjs" pins | tee pins.json
+          jq -e --arg w "$WANT" '.ref == $w' pins.json
+      - name: Same wrangler as the pipeline
+        run: |
+          a="$(node -p "require('./node_modules/wrangler/package.json').version")"
+          b="$(node -p "require('$P/node_modules/wrangler/package.json').version")"
+          echo "caller $a, pipeline $b"; [ "$a" = "$b" ]
+      - name: Repo follows the pattern (names, staging names, one account)
+        run: node "$P/scripts/worker/repo.mjs" check
+      - name: Every Worker - proof, typecheck, its own checks and tests
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+        run: |
+          for w in $(node "$P/scripts/worker/repo.mjs" list | jq -r '.[]'); do
+            echo "::group::$w"
+            node "$P/scripts/door/proof.mjs" --worker "$w" --base "origin/$BASE"
+            if [ -f "workers/$w/tsconfig.json" ]; then npx --no-install tsc -p "workers/$w/tsconfig.json"; fi
+            if [ -f "workers/$w/scripts/check.mjs" ]; then node "workers/$w/scripts/check.mjs"; fi
+            shopt -s nullglob
+            for t in tests/"$w"/*_test.mjs tests/"$w"/*.test.mjs; do echo "== $t"; node "$t"; done
+            shopt -u nullglob
+            echo "::endgroup::"
+          done
+      - name: The caller's npm test (if it has one)
+        run: if jq -e '.scripts.test' package.json >/dev/null; then npm test; fi
