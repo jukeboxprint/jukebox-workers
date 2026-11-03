@@ -1,5 +1,14 @@
 # Changes
 
+## v1.0.2 (2026-11-03)
+
+- `scripts/door/rollout.mjs`: health after a deploy (100%, and `--bootstrap`) is polled until the health paths answer
+  as `pipeline.json` says, instead of read once `health_delay_s` after the deploy. A new version can take a while to
+  reach every edge, so the single read could see the old version and roll back a healthy release (jbx-accounting
+  staging, 3 Nov 2026). New optional `rollout.health_wait_s` (default 90; 0 = one read, as before) and
+  `rollout.health_poll_s` (default 5). A real failure is still rolled back, at most `health_wait_s` later. The loop is
+  `pollHealth` in `scripts/door/worker.mjs` (tests in `tests/scripts/worker.test.mjs`). Packages unchanged.
+
 ## v1.0.1 (2026-11-03)
 
 - `worker-d1.yml`: a push run with no `CLOUDFLARE_API_TOKEN` in the staging environment (a template, or a new repo

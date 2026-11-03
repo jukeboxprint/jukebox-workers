@@ -10,7 +10,8 @@
 //   3. Each step below 100: `wrangler versions deploy old@(100-p)% new@p%`, then watch Workers analytics per version
 //      for watch_minutes (longer, up to max_watch_minutes, until min_requests reach the new version). Breach or too
 //      little traffic: `wrangler versions deploy old@100%` and exit 1.
-//   4. 100%: new@100%, then the health paths must answer as pipeline.json says (else back to old@100%).
+//   4. 100%: new@100%, then the health paths must answer as pipeline.json says, polled for up to health_wait_s (default
+//      90, every health_poll_s, default 5) while the new version reaches every edge (else back to old@100%).
 // A deploy command that fails is checked against the real deployment: anything but old@100% is put back. A rollback
 // is retried rollback_retries times; if it still fails the run prints rollback_failed and exits 3 (a person must look).
 // --restore <id>: the workflow's failure/cancel step; puts <id> back at 100% unless it already is.
@@ -20,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { worker, smokeList } from './worker.mjs';
+import { worker, smokeList, pollHealth } from './worker.mjs';
 
 const { WORKER, WD, PIPE } = worker();
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -162,6 +163,9 @@ async function health() {
   return 'ok';
 }
 
+// health(), polled until it answers as pipeline.json says (worker.mjs pollHealth): health_wait_s, health_poll_s.
+const healthUntil = () => pollHealth(health, { wait_s: CFG.health_wait_s, poll_s: CFG.health_poll_s, sleep });
+
 // --bootstrap: one full `wrangler deploy` (applies migrations, creates the Worker's own namespaces), then health.
 // Staging: any Worker. Live: only a new Worker whose pipeline.json says bootstrap_live (copilot-jobs), and only while the
 // live Worker is a dashboard placeholder with no migration tag (GET /workers/services/<name>): once it has one, live is
@@ -180,9 +184,9 @@ if (BOOTSTRAP) {
   log({ step: 'bootstrapped', release: REL.version, sha256: REL.sha256 });
   if (DRY) process.exit(0);
   await sleep(CFG.health_delay_s * 1000);
-  const h = await health();
-  if (h !== 'ok') { log({ step: 'health', ok: false, why: h }); process.exit(1); }
-  log({ step: 'health', ok: true });
+  const h = await healthUntil();
+  if (!h.ok) { log({ step: 'health', ok: false, why: h.why, tries: h.tries }); process.exit(1); }
+  log({ step: 'health', ok: true, tries: h.tries });
   process.exit(0);
 }
 
@@ -223,9 +227,9 @@ for (const p of STEPS) {
     log({ step: 'deployed', pct: 100, version: newV });
     if (DRY) break;
     await sleep(CFG.health_delay_s * 1000);
-    const h = await health();
-    if (h !== 'ok') await back(oldV, 'health after 100%: ' + h);
-    log({ step: 'health', ok: true });
+    const h = await healthUntil();
+    if (!h.ok) await back(oldV, 'health after 100%: ' + h.why);
+    log({ step: 'health', ok: true, tries: h.tries });
     break;
   }
   await deploy(['versions', 'deploy', `${oldV}@${100 - p}%`, `${newV}@${p}%`, '--yes', '--message', msg(`${MSG} (${p}%)`)], oldV, `deploy ${p}%`);
