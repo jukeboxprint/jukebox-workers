@@ -1,0 +1,73 @@
+# Reusable: puts the previous (or a named) live version of one Worker back at 100%, then runs its smoke list.
+# Hand-started only. Faster by hand: Cloudflare dashboard -> the Worker -> Deployments -> Rollback (works on a phone).
+# A rollback restores code, vars and bindings, never non-versioned settings and never a D1 migration.
+# Caller: on workflow_dispatch with inputs worker, version_id (blank = the one before), reason (required);
+#   uses: jukeboxprint/jukebox-workers/.github/workflows/worker-rollback.yml@<sha>
+#   with: { pipeline_ref: <sha>, environment_live: <area>-live, worker: ..., version_id: ..., reason: ... }
+#   secrets: inherit
+name: Worker rollback (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pipeline_ref: { type: string, required: true }
+      environment_live: { type: string, required: true }
+      worker: { type: string, required: true }
+      version_id: { type: string, default: '' }
+      reason: { type: string, required: true }
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.ref == 'refs/heads/main' }}
+    environment: ${{ inputs.environment_live }}
+    concurrency:
+      group: ${{ github.repository }}-${{ inputs.worker }}-rollback   # never queued behind a deploy that is watching
+      cancel-in-progress: false
+    env:
+      JBX_REPO_ROOT: ${{ github.workspace }}
+      P: ${{ github.workspace }}/.jbx-pipeline
+      REPO_NAME: ${{ github.repository }}
+      WORKER_NAME_EXCEPTIONS: ${{ vars.WORKER_NAME_EXCEPTIONS }}
+      CF_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+      W: ${{ inputs.worker }}
+      VARS: ${{ toJSON(vars) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with: { repository: jukeboxprint/jukebox-workers, ref: '${{ inputs.pipeline_ref }}', path: .jbx-pipeline, persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with: { node-version: '22' }
+      - run: npm ci && (cd "$P" && npm ci)
+      - name: Pattern, the Worker exists, and its live switch is on
+        run: |
+          node "$P/scripts/worker/repo.mjs" check
+          node "$P/scripts/worker/repo.mjs" list | jq -e --arg w "$W" 'index($w) != null' >/dev/null || { echo "no workers/$W"; exit 1; }
+          sw="$(node "$P/scripts/worker/repo.mjs" switch "$W")"
+          [ "$(jq -r --arg k "${sw}_LIVE" '.[$k] // ""' <<<"$VARS")" = on ] || { echo "${sw}_LIVE is not on"; exit 1; }
+      - name: wrangler rollback
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          REASON: ${{ inputs.reason }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          if [ -n "$VERSION_ID" ] && ! [[ "$VERSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "version_id must be a version id (or blank)"; exit 1
+          fi
+          cd "workers/$W"
+          args=(rollback)
+          [ -n "$VERSION_ID" ] && args+=("$VERSION_ID")
+          "$P/node_modules/.bin/wrangler" "${args[@]}" --yes --message "rollback: ${REASON:0:80}"
+      - name: Smoke (no secrets sent)
+        run: |
+          if [ "$(jq -r '.kind // "door"' "workers/$W/pipeline.json")" = passthrough ]; then node "$P/scripts/door/smoke_simple.mjs" --worker "$W" --env live
+          elif [ -f "workers/$W/scripts/smoke.mjs" ]; then node "workers/$W/scripts/smoke.mjs" --env live
+          else echo "no smoke for $W"; exit 1; fi

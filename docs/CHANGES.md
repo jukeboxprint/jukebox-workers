@@ -1,0 +1,21 @@
+# Changes
+
+## v1.0.0 (2026-11-03)
+
+First release.
+
+- `scripts/door/*.mjs` moved from jukebox-copilot `main` (last change `c29072e`). Two changes: the repo root comes from
+  `JBX_REPO_ROOT` (unset = two folders up, as before), and `proof.mjs` runs `dist.mjs` from its own folder. The front
+  door's own `smoke.mjs` stays with the front door. Checked: `proof.mjs` run from here passes for jbx-inflow,
+  jbx-analytics, jbx-accounting, jbx-front-door v42, jbx-claude-cache v3 and copilot-jobs v4.
+- Also in `scripts/door` (asked for by the analytics session for `jbx-analytics-jobs`): Hyperdrive bindings
+  (`hyperdrive <binding> <id>` in proof, drift and `wantBindings`; never inherited by an env; `TBD` blocks), and
+  `compatibility_flags` handled like `compatibility_date` (staging noted; live refused except a placeholder while
+  `placeholder_live` is true). Checked: proof passes for `jbx-analytics-jobs` (Hyperdrive, `nodejs_compat`, 1.2 MB).
+- `scripts/worker/d1.mjs` from jukebox-inflow, same `JBX_REPO_ROOT` change.
+- `scripts/worker/repo.mjs` (new): the pattern check, Worker list, changed Workers, switch names and pins. Replaces
+  `scripts/ci/repo-vars.mjs` (analytics), `scripts/worker/vars.mjs` (inflow) and the inline check (accounting).
+- Reusable workflows `worker-ci`, `worker-deploy`, `worker-rollback`, `worker-d1`: several Workers per repo,
+  per-Worker switches, names from the toml.
+- Packages `door-pass`, `push-sign`, `health`, `crypto`.
+- `public_guard.mjs` and Pipeline CI.

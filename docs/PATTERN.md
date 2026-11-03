@@ -76,12 +76,17 @@ Listed exceptions (not renamed: new Durable Object namespaces and bindings): `co
 
 ## 5. Pipeline
 
-Source: `jukebox-workers` at a tag. Callers pin the commit sha (tag in a comment). The reusable workflow checks out
-jukebox-workers at that same sha for the scripts, and CI fails if `package.json`'s tag and the workflow sha differ.
+Source: `jukebox-workers` at a tag. Callers pin the commit sha (tag in a comment) and pass the same sha as
+`pipeline_ref`. The reusable workflow checks out jukebox-workers at that sha into `.jbx-pipeline/` and runs its
+scripts with `JBX_REPO_ROOT` = the caller's checkout. CI fails if the workflows pin different shas, if `pipeline_ref`
+differs from the pin, or if the caller's wrangler version differs from the pipeline's. How to call it: `docs/PIPELINE.md`.
 
-- **Names come from `wrangler.toml`**, not repo variables. Checks: `name` starts `jbx-<area>` (or is a listed exception);
-  `[env.staging] name` = `name + "-staging"`; the account is the one in the pipeline's config. Repo variables are only
-  the per-Worker switches.
+- **Names come from `wrangler.toml`**, not repo variables (`scripts/worker/repo.mjs check`): `name` is
+  `jbx-<area>[-<role>]` with area = the repo name without `jukebox-`, the folder is the name without `jbx-`,
+  `[env.staging] name` = `name + "-staging"`, and every toml in the repo names one account. Listed exceptions live in
+  the admin-held repository variable `WORKER_NAME_EXCEPTIONS`, so a PR cannot point a repo's (account-wide) token at
+  another repo's Worker. Optional `CF_ACCOUNT_ID` variable: when set, the tomls must match it. Otherwise repository
+  variables are only the per-Worker switches.
 - **PR → CI** (required check, runs on every PR): public-guard (jukebox-workers only), typecheck, tests in `tests/<dir>/`,
   `proof.mjs` (release = build of `src/`, byte for byte; upload form = the toml; no observability, placement or limits),
   size and growth against main, `gen` checks (each `src/gen` file = its n8n export), n8n manifest hashes.
@@ -98,6 +103,11 @@ jukebox-workers at that same sha for the scripts, and CI fails if `package.json`
   deploy. Migrations additive only; a rollback never undoes one.
 - **Durable Objects**: ship classes before the first bootstrap; a new class on a live Worker needs its own plan.
 - **Never**: the dashboard editor, a paste, `[observability]` in the toml, `wrangler secret put` from CI.
+
+- **Smoke**: kind `passthrough` runs `pipeline.json`'s smoke list (`smoke_simple.mjs`); any other kind runs the
+  Worker's own `workers/<dir>/scripts/smoke.mjs` (the front door's smoke stays with the front door).
+- **`skip_staging`** is refused while that Worker's staging switch is on, and live needs a staging job that really
+  deployed (a staging switch that is off is not a pass).
 
 Copilot's per-Worker workflows are replaced by the callers in punch-list step 5.
 

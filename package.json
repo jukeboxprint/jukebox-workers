@@ -1,0 +1,25 @@
+{
+  "name": "@jukebox/workers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Jukebox Print's shared Cloudflare Worker pipeline and packages. docs/PATTERN.md.",
+  "exports": {
+    "./door-pass": "./packages/door-pass/src/index.ts",
+    "./push-sign": "./packages/push-sign/src/index.ts",
+    "./health": "./packages/health/src/index.ts",
+    "./crypto": "./packages/crypto/src/index.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --test tests/packages/*.test.ts tests/scripts/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "guard": "node scripts/ci/public_guard.mjs"
+  },
+  "dependencies": {
+    "smol-toml": "1.9.1",
+    "wrangler": "4.156.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
