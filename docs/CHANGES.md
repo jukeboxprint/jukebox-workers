@@ -1,5 +1,11 @@
 # Changes
 
+## v1.0.1 (2026-11-03)
+
+- `worker-d1.yml`: a push run with no `CLOUDFLARE_API_TOKEN` in the staging environment (a template, or a new repo
+  before its environments are set up) logs "not set up yet" and passes instead of failing (jukebox-template's first
+  merge emailed Tyler a failure). A hand-started run still fails. Packages unchanged: `@jukebox/workers#v1.0.0` stays.
+
 ## v1.0.0 (2026-11-03)
 
 First release.
