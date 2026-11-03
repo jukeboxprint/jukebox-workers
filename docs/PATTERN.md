@@ -16,7 +16,8 @@ copilot-jobs, copilot-suggest).
 5. Port as-is first. Prove identical output in shadow, then switch. Refactor only after a clean week.
 6. Every behaviour change sits behind a config switch, where missing = today. Each flip is on Tyler's word, and the
    audit row records it.
-7. Live deploys go out only from a hand-started run with Go live ticked, on Tyler's word.
+7. Live deploys go out only on Tyler's word: a hand-started run with Go live ticked, or a merge carrying the go-live
+   label he added himself (section 5).
 
 ## 2. Repos
 
@@ -96,6 +97,14 @@ differs from the pin, or if the caller's wrangler version differs from the pipel
   Claude starts it with `actions_run_trigger` only after Tyler's word for that run. Staging first, then live drift (live
   must be a release main ever named, or the placeholder while `placeholder_live` is true) → D1 migrations → rollout
   per `pipeline.json` → health + smoke → drift again. Any breach, failure or cancel puts the old version back.
+- **The go-live label** (3 Nov 2026; environment approvals need GitHub Enterprise on a private repo): Tyler adds the
+  label to a release PR and merges it himself. That label is his word. The merge's Deploy run then goes on to live after
+  staging passes, exactly as a hand-started Go live run would. `scripts/door/golive.mjs` (plan job, push runs only) says
+  yes only when the pushed commit is the merge commit of exactly one merged PR, the PR carries `GO_LIVE_LABEL`, its last
+  label event is "labeled" before the merge, and the label was added and the PR merged by a login in `GO_LIVE_ACTORS`,
+  neither through an app (`performed_via_github_app` empty). Claude's GitHub calls run as Tyler's login through the
+  `claude` app, so a label or merge Claude made never counts, and Claude never adds the label. One Worker per run, as
+  for Go live. Missing variables = off. Hand-started Go live still works.
 - **Rollout defaults**: `[100]` while no traffic is routed; `[50, 100]` with 10 requests in 60 min once routed (front door
   `[25, 100]` with 50). Thresholds in `pipeline.json`, judged as ratios against the old version.
 - **Rollback**: Rollback workflow (blank = the version before), or the dashboard's Deployments → Rollback.

@@ -1,6 +1,8 @@
 # Reusable: Worker deploy (docs/PATTERN.md section 5). Staging on merge for each Worker whose release.json or
-# wrangler.toml changed, when <DIR>_STAGING = on. Live ONLY from a hand-started run of the caller's Deploy with
-# go_live ticked, for one Worker, when <DIR>_LIVE = on, on Tyler's word. Merging never deploys live.
+# wrangler.toml changed, when <DIR>_STAGING = on. Live only on Tyler's word, for one Worker, when <DIR>_LIVE = on: a
+# hand-started run of the caller's Deploy with go_live ticked, or a merge of a PR Tyler labelled GO_LIVE_LABEL by hand
+# (and merged by hand), both by a login in GO_LIVE_ACTORS (repository variables; missing = off). scripts/door/golive.mjs
+# decides in plan; anything done through an app (Claude) never counts. Otherwise merging never deploys live.
 # A caller's .github/workflows/deploy.yml:
 #   on:
 #     push: { branches: [main], paths: ['workers/*/release.json', 'workers/*/wrangler.toml'] }
@@ -10,6 +12,7 @@
 #         go_live: { type: boolean, default: false, description: 'Go live after staging passes (this run is your approval)' }
 #         skip_staging: { type: boolean, default: false, description: 'Allowed only while <DIR>_STAGING is not on' }
 #         bootstrap_staging: { type: boolean, default: false, description: 'Durable Object Worker: first staging deploy' }
+#   permissions: { contents: read, pull-requests: read, issues: read }   # the last two: golive.mjs
 #   jobs:
 #     deploy:
 #       uses: jukeboxprint/jukebox-workers/.github/workflows/worker-deploy.yml@<sha>   # vX.Y.Z
@@ -46,9 +49,14 @@ env:
 
 jobs:
   plan:
+    permissions:
+      contents: read
+      pull-requests: read   # golive.mjs: the merged PR and its labels
+      issues: read          # golive.mjs: who labelled and merged it, and how
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
+      label_go: ${{ steps.golive.outputs.go }}
       workers: ${{ steps.plan.outputs.workers }}
       one: ${{ steps.plan.outputs.one }}
       switch: ${{ steps.plan.outputs.switch }}
@@ -102,6 +110,14 @@ jobs:
             echo "skip_staging is refused while this Worker's staging switch is on (run go_live alone: staging, then live)"; exit 1
           fi
           echo "deploying: $ws"
+      - name: "go-live label: may this merge go on to live after staging? (scripts/door/golive.mjs; push only)"
+        id: golive
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GO_LIVE_LABEL: ${{ vars.GO_LIVE_LABEL }}
+          GO_LIVE_ACTORS: ${{ vars.GO_LIVE_ACTORS }}
+        run: node "$P/scripts/door/golive.mjs"
       - name: Every Worker in this run - proof
         env:
           WS: ${{ steps.plan.outputs.workers }}
@@ -178,7 +194,7 @@ jobs:
   live:
     needs: [plan, staging]
     if: >-
-      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.go_live && !inputs.bootstrap_staging &&
+      ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.go_live) || (github.event_name == 'push' && needs.plan.outputs.label_go == 'true')) && !inputs.bootstrap_staging &&
       github.ref == 'refs/heads/main' && needs.plan.outputs.one != '' &&
       needs.plan.outputs.live_on == 'true' && needs.plan.result == 'success' &&
       ((needs.staging.result == 'success' && needs.plan.outputs.staging_on == 'true') ||

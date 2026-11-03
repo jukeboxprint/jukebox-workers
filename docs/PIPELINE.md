@@ -31,7 +31,7 @@ on:
       go_live: { description: 'Go live after staging passes (this run is your approval)', type: boolean, default: false }
       skip_staging: { description: 'Allowed only while the staging switch is off', type: boolean, default: false }
       bootstrap_staging: { description: 'Durable Object Worker: first staging deploy only', type: boolean, default: false }
-permissions: { contents: read }
+permissions: { contents: read, pull-requests: read, issues: read }   # the last two: the go-live label check
 jobs:
   deploy:
     uses: jukeboxprint/jukebox-workers/.github/workflows/worker-deploy.yml@<sha>  # vX.Y.Z
@@ -82,8 +82,9 @@ jobs:
 | Where | What |
 |---|---|
 | Environments | `<area>-staging` and `<area>-live` (live: deployments from `main` only). Each holds `CLOUDFLARE_API_TOKEN` = the repo's own token `github-<repo>-deploy`. Never a repository or organisation secret. |
-| Variables | `<DIR>_STAGING` = `on` (merges deploy staging), `<DIR>_LIVE` = `on` (a Go live run may deploy live), per Worker folder: `workers/inflow` → `INFLOW_*`, `workers/inflow-jobs` → `INFLOW_JOBS_*`. Missing = off. Optional: `CF_ACCOUNT_ID`, `WORKER_NAME_EXCEPTIONS` (only for Workers named before the pattern). |
+| Variables | `<DIR>_STAGING` = `on` (merges deploy staging), `<DIR>_LIVE` = `on` (a Go live run may deploy live), per Worker folder: `workers/inflow` → `INFLOW_*`, `workers/inflow-jobs` → `INFLOW_JOBS_*`. Missing = off. `GO_LIVE_LABEL` = `go-live` and `GO_LIVE_ACTORS` = Tyler's GitHub login (comma-separated) turn on the go-live label; missing = off. Optional: `CF_ACCOUNT_ID`, `WORKER_NAME_EXCEPTIONS` (only for Workers named before the pattern). |
 | Branch rule on `main` | PR required; check "Worker CI" required. |
+| Labels | `go-live` (the go-live label). |
 
 ## What a run does
 
@@ -92,6 +93,8 @@ jobs:
 - **Deploy on merge:** each changed Worker whose `<DIR>_STAGING` is on: drift → D1 migrations → upload at 100% → smoke.
 - **Deploy by hand with Go live** (one Worker, `<DIR>_LIVE` on, on Tyler's word): staging as above, then live drift →
   D1 migrations → rollout per `pipeline.json` → drift again; any failure or cancel puts the old version back.
+- **Deploy on a merge with the go-live label** (one Worker, `<DIR>_LIVE` on, Tyler's own label and merge, not through
+  an app; `PATTERN.md` section 5): staging, then live, as a Go live run.
 - **Rollback by hand:** `wrangler rollback`, then the smoke list.
 - **D1:** creates any database the tomls name and prints ids; the ids go into the toml by PR.
 

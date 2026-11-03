@@ -1,5 +1,16 @@
 # Changes
 
+## v1.0.3 (2026-11-03)
+
+- The go-live label, from jukebox-copilot (PR #189): a merge of a PR Tyler labelled `GO_LIVE_LABEL` and merged himself,
+  both by a login in `GO_LIVE_ACTORS` and neither through an app, goes on to live after staging, as a Go live run would.
+  New `scripts/door/golive.mjs` (run in `worker-deploy.yml`'s plan job, push runs only; output `label_go`); the live
+  job runs on a hand-started Go live (unchanged) or on a push with `label_go` true. Tests: `tests/scripts/golive.test.mjs`
+  (15 cases against a fake GitHub API). Missing variables = off.
+- Callers must add `pull-requests: read` and `issues: read` to `deploy.yml`'s `permissions` when they re-pin
+  (`docs/PIPELINE.md`); without them the run fails at startup. Packages unchanged.
+- `PATTERN.md`: principle 7 and section 5 name the label as Tyler's word alongside Go live.
+
 ## v1.0.2 (2026-11-03)
 
 - `scripts/door/rollout.mjs`: health after a deploy (100%, and `--bootstrap`) is polled until the health paths answer
