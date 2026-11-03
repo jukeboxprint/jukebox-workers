@@ -93,3 +93,21 @@ export function obsDiff(want, have, at = 'observability', skip = []) {
   }
   return out;
 }
+
+// Health after a deploy, polled: a new version can take a while to reach every edge, so one read just after the
+// deploy can see the old version (or a cold start) and roll back a healthy release (jbx-accounting staging, 3 Nov 2026).
+// check() returns 'ok' or why not; it is retried every poll_s seconds until it says ok or wait_s seconds have passed
+// (pipeline.json rollout.health_wait_s / health_poll_s; defaults 90 / 5; wait_s 0 = one read, as before).
+// Returns { ok, why, tries }. sleep(ms) is the caller's (rollout.mjs scales it in tests).
+export async function pollHealth(check, { wait_s, poll_s, sleep }) {
+  const wait = Math.max(0, Number.isFinite(Number(wait_s)) && wait_s !== '' && wait_s != null ? Number(wait_s) : 90);
+  const every = Math.max(1, Number(poll_s) > 0 ? Number(poll_s) : 5);
+  const tries = 1 + Math.floor(wait / every);
+  let why = 'not checked';
+  for (let i = 0; i < tries; i++) {
+    if (i) await sleep(every * 1000);
+    why = await check();
+    if (why === 'ok') return { ok: true, why: 'ok', tries: i + 1 };
+  }
+  return { ok: false, why: `${why} (${tries} ${tries === 1 ? 'read' : 'reads'} over ${wait} s)`, tries };
+}
