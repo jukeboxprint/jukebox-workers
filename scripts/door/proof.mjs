@@ -109,7 +109,7 @@ for (const env of ['live', 'staging']) {
     const got = (meta.bindings || []).map(b => b.type === 'kv_namespace' ? `kv_namespace ${b.name} ${b.namespace_id}`
       : b.type === 'd1' ? `d1 ${b.name} ${b.id || b.database_id}` : b.type === 'plain_text' ? `plain_text ${b.name} ${b.text}`
       : b.type === 'durable_object_namespace' ? doBinding(b.name, b.class_name, b.script_name, want.name)
-      : b.type === 'service' ? `service ${b.name} ${b.service}` : `${b.type} ${b.name}`).sort();
+      : b.type === 'service' ? `service ${b.name} ${b.service}` : b.type === 'hyperdrive' ? `hyperdrive ${b.name} ${b.id}` : `${b.type} ${b.name}`).sort();
     if (JSON.stringify(got) !== JSON.stringify(wantBindings(env))) throw new Error('form bindings ' + JSON.stringify(got));
     out.checks['upload_' + env] = 'ok';
   } catch (e) { fail('upload_' + env, String(e.stderr || e.message || e).split('\n').filter(Boolean).slice(-1)[0]); }

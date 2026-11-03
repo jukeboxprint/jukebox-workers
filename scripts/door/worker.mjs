@@ -38,6 +38,9 @@ export function wantBindings(toml, env) {
   // (wrangler never sends it: Cloudflare resolves the class to the Worker's namespace).
   for (const d of (w.durable_objects || {}).bindings || []) e.push(doBinding(d.name, d.class_name, d.script_name, w.name));
   for (const s of w.services || []) e.push(`service ${s.binding} ${s.service}`);
+  // Hyperdrive (jukebox-workers v1.0.0): never inherited by an env (wrangler), so an env without its own has none; staging
+  // normally has none (no live data). An id of TBD blocks every deploy, as for KV and D1.
+  for (const h of (env === 'live' ? toml.hyperdrive : ((toml.env || {})[env] || {}).hyperdrive) || []) e.push(`hyperdrive ${h.binding} ${h.id}`);
   return e.sort();
 }
 // One Durable Object binding in drift's form; a script_name naming the Worker itself is the same as none.

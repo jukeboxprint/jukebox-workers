@@ -106,7 +106,9 @@ try {
   // check like the bindings (accepted only if live really is the placeholder; the first upload sets the toml date).
   if (s.compatibility_date !== want.compatibility_date) (ENV === 'live' ? (PLACEHOLDER_LIVE ? deferred : problems) : notes).push(`compatibility_date ${ENV} ${s.compatibility_date} != toml ${want.compatibility_date}${ENV === 'live' ? '' : ' (the deploy sets the toml date)'}`);
   const lf = JSON.stringify((s.compatibility_flags || []).slice().sort()), tf = JSON.stringify((want.compatibility_flags || []).slice().sort());
-  if (lf !== tf) problems.push(`compatibility_flags live ${lf} != toml ${tf}`);
+  // Flags as the date (jukebox-workers v1.0.0): staging takes the toml's with the upload (noted); live refuses, except a
+  // dashboard placeholder while pipeline.json placeholder_live is true (a Hello World has [], the first upload sets them).
+  if (lf !== tf) (ENV === 'live' ? (PLACEHOLDER_LIVE ? deferred : problems) : notes).push(`compatibility_flags ${ENV} ${lf} != toml ${tf}${ENV === 'live' ? '' : ' (the deploy sets the toml flags)'}`);
   if (s.usage_model && s.usage_model !== 'standard') problems.push(`usage_model ${s.usage_model}`);
   if ((s.tail_consumers || []).length) notes.push('tail consumers set on the live Worker (not in toml)');
   if (s.logpush) notes.push('logpush on (not in toml)');
@@ -120,6 +122,7 @@ try {
     else if (b.type === 'plain_text') have.push(`plain_text ${b.name} ${b.text}`);
     else if (b.type === 'durable_object_namespace') have.push(doBinding(b.name, b.class_name, b.script_name, NAME));
     else if (b.type === 'service') have.push(`service ${b.name} ${b.service}`);
+    else if (b.type === 'hyperdrive') have.push(`hyperdrive ${b.name} ${b.id}`);
     else have.push(`${b.type} ${b.name} (not handled by the pipeline)`);
   }
   // Live: any difference stops the deploy (the upload would change live's bindings). Staging: the upload sets them, so a
