@@ -11,7 +11,7 @@ copilot-jobs, copilot-suggest).
 1. Cloudflare does the work: pages, reads, writes, schedules, queues and compute run on Workers.
 2. Data never lives in n8n. Each Worker's D1 is the system of record for its data and config. n8n reads and writes
    only through a Worker's API.
-3. BigQuery is for history and reporting. Workers write to it only through `jbx-bq-writer`.
+3. BigQuery is for history and reporting. Workers write to it, and read the warehouse, only through `jbx-bq`.
 4. n8n is glue: triggers, schedules that call Workers, third-party steps not yet on Workers, email.
 5. Port as-is first. Prove identical output in shadow, then switch. Refactor only after a clean week.
 6. Every behaviour change sits behind a config switch, where missing = today. Each flip is on Tyler's word, and the
@@ -24,7 +24,7 @@ copilot-jobs, copilot-suggest).
 |---|---|---|
 | `jukebox-workers` | **public** | Reusable workflows, `scripts/door` + `scripts/worker`, `packages/*`, `PATTERN.md`, the public guard. Released by tag `vX.Y.Z`. |
 | `jukebox-template` | private, template | The empty project layout of section 3, already wired to a `jukebox-workers` tag. New repos are made from it. |
-| `jukebox-door` | private | `jbx-front-door` and the shared Workers (`jbx-bq-writer`). Moves out of jukebox-copilot after the routing PR lands. |
+| `jukebox-door` | private | `jbx-front-door` and the shared Workers (`jbx-bq`). Moves out of jukebox-copilot after the routing PR lands. |
 | `jukebox-<area>` | private | One business area (copilot, analytics, inflow, accounting, ...). Can hold several Workers. |
 | `jukebox-skills`, `jukebox-knowledge` | as today | Skills; hand-back copies. |
 
@@ -65,7 +65,7 @@ docs/
 | Worker | `jbx-<area>[-<role>]`, staging `+ -staging` | `jbx-inflow`, `jbx-inflow-staging` |
 | Worker folder | `workers/<area>[-<role>]` without `jbx-` | `workers/inflow` |
 | D1 / KV / Queue | Worker name + purpose, staging `-staging` | `jbx-analytics-snap-staging` |
-| Service binding | target Worker in capitals, no `JBX_` | `ANALYTICS`, `BQ_WRITER` |
+| Service binding | target Worker in capitals, no `JBX_` | `ANALYTICS`, `BQ` |
 | GitHub environments | `<area>-staging`, `<area>-live` (live: main only) | `inflow-live` |
 | Repo variables | `<DIR>_STAGING`, `<DIR>_LIVE` = `on` (missing = off) | `INFLOW_LIVE` |
 | Deploy token | `github-<repo>-deploy` | `github-jukebox-inflow-deploy` |
@@ -117,7 +117,7 @@ Copilot's per-Worker workflows are replaced by the callers in punch-list step 5.
 |---|---|---|
 | `DOOR_SECRET` | every Worker behind the door, and n8n | **own value per target** (each Worker, n8n). The door holds them as `DOOR_SECRET_<BINDING>` (n8n: `DOOR_SECRET_N8N`) and signs each pass with the target's key. |
 | `PUSH_SECRET` | any Worker that takes signed pushes or calls | own value per Worker per environment; n8n variable `<WORKER>_PUSH_SECRET` |
-| `BQ_SA_JSON` | `jbx-bq-writer` only (and the front door until open_history moves) | |
+| `BQ_SA_JSON` | `jbx-bq` only (and the front door until open_history moves) | read key: BigQuery Data Viewer on the allowed datasets + Job User; the write path gets its own key |
 | Third-party | `<VENDOR>_TOKEN` / `<VENDOR>_API_KEY`, area suffix when keys differ (`ANTHROPIC_COPILOT_KEY`) | |
 | `CLOUDFLARE_API_TOKEN` | GitHub environments `<area>-staging` / `-live` only | one token per repo, `github-<repo>-deploy`, 1-year expiry: Workers Scripts Edit, Account Analytics Read, D1 Edit, Workers KV Storage Edit, Queues Edit |
 
@@ -139,13 +139,23 @@ Copilot's per-Worker workflows are replaced by the callers in punch-list step 5.
 | Durable Objects | Per-entity coordination: sockets, per-conversation jobs, ledgers | Reporting data |
 | Queues | Async work; every BigQuery row | |
 | R2 | Files and images | |
-| BigQuery | History, reporting, analysis. Written by `jbx-bq-writer` (Queue consumer) into the same tables as today; Workers may read it | Live app state |
+| BigQuery | History, reporting, analysis. Written by `jbx-bq` (Queue consumer) into the same tables as today. Read through `jbx-bq` too (`POST /query`, one SELECT, datasets allow-listed per caller in its config) | Live app state |
 | n8n data tables | Nothing of record. Existing ones move out (section 10) | New tables |
 
 - Compute also moves: an n8n compute (for example analytics snapshots) becomes a Worker cron or Queue consumer reading D1 or
   BigQuery, ported as-is and proved by parity. Until then n8n pushes its result to the Worker's signed ingest.
 - Logs and stats: one request id panel → Worker → Claude/n8n → panel; stage timings and usage rows go to the Queue;
   inputs masked; 30-day retention. Workers analytics for requests, errors, p50, p99. Observability is dashboard-managed.
+
+### `jbx-bq` (shared, in jukebox-door; renamed from jbx-bq-writer, Tyler 3 Nov 2026)
+
+- **Read:** `POST /query` `{ "sql": "<one SELECT>" }` → `{ "rows": [ { col: value } ] }`. INT64, FLOAT64 and NUMERIC come
+  back as JSON numbers, NULL as null, everything else as strings. At most 50,000 rows and 120 s. Anything but a single
+  SELECT on the caller's allowed datasets is refused.
+- **Callers** are allow-listed in `jbx-bq`'s D1 config: caller Worker → datasets it may read. Each call is signed with
+  `@jukebox/push-sign` (purpose `bqread`) on a key for that caller; the service binding alone is not enough.
+- **Keys:** the read key has BigQuery Data Viewer on the allowed datasets plus Job User, nothing else. The write path
+  (the Queue consumer) gets its own key. Staging holds neither and answers 503.
 
 ## 8. Front door routing
 
@@ -202,7 +212,7 @@ viewer → jbx-front-door: sign-in, cookie, role check (door D1 route_roles)
   after). The n8n API key stays in n8n; no n8n key in GitHub.
 - **Drift**: daily and read-only. Because the key stays out of GitHub, it runs as an n8n scheduled UTIL that reads each
   repo's manifests at `main` and compares them with the live nodes. It emails on a mismatch and writes the result through
-  `jbx-bq-writer`.
+  `jbx-bq`.
 
 ## 12. Shared packages (`jukebox-workers/packages/*`, TypeScript, released with the pipeline tag)
 
@@ -286,7 +296,7 @@ parallel. **T** = Tyler, **C** = Claude.
 
 **6. Data out of n8n** (each per section 10)
 - inflow settings + saves → D1; analytics `analytics_*` meta → D1 and computes to Worker crons; Copilot
-  `csr_call_assist_config` / `app_config` → D1 with admin pages; Event Drain → Queue + `jbx-bq-writer` (new, in
+  `csr_call_assist_config` / `app_config` → D1 with admin pages; Event Drain → Queue + `jbx-bq` (new, in
   jukebox-door), table by table.
 
 **7. Sign-in off n8n (last)**
