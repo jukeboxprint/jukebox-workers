@@ -170,6 +170,11 @@ viewer → jbx-front-door: sign-in, cookie, role check (door D1 route_roles)
 - **`route_roles`** (door D1, replaces `ROUTE_ROLES` in code): ordered rows, first match wins, as today.
 - **Fallback**: on a GET, an unbound binding, a throw, a timeout before headers, a 5xx or a 404 marked "not ported" →
   n8n, counted. A write that the Worker accepted (headers received) is **never** sent again to n8n (copilot-jobs rule).
+- **Hand-back** (Tyler, 3 Nov 2026): a Worker that should not answer a request (data missing or stale, a render error, a
+  save it does not take yet) answers **409 with `x-jbx-route: n8n`**, and the door sends that request to n8n, counted.
+  GET: always. POST: the Worker sends it only when it wrote nothing, so the door forwards the same body; a Worker that
+  wrote anything answers itself and never hands back. Any other answer to a POST is the Worker's and is never resent.
+  Copilot's Workers keep their own variant, `x-copilot-route: n8n` (front door v50 `/aux` routes).
 - **Shadow**: n8n answers; the Worker gets the same request in the background (sampled, capped per day); body hashes
   compared, differences counted and logged.
 - **Staging**: the live door never sends traffic to a staging Worker. `jbx-front-door-staging` binds the staging Workers.
