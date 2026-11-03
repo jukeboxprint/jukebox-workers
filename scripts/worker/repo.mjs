@@ -65,7 +65,7 @@ if (cmd === 'pins') {
       if (!/^[0-9a-f]{40}$/.test(m[1])) bad.push(`${f}: pin ${m[1]} is not a commit sha (pin the sha, tag in a comment)`);
       refs.add(m[1]);
     }
-    for (const m of t.matchAll(/pipeline_ref:\s*['"]?([^\s'"#]+)/g)) inputs.add(m[1]);
+    for (const m of t.matchAll(/pipeline_ref:\s*['"]?([^\s'",}#]+)/g)) inputs.add(m[1]);
   }
   if (refs.size > 1) bad.push('workflows pin different jukebox-workers commits: ' + [...refs].join(', '));
   const ref = [...refs][0] || '';

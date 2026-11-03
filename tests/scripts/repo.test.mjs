@@ -70,6 +70,8 @@ test('pins: one sha everywhere, pipeline_ref equal to it', () => {
   assert.equal(run(caller({}, { 'ci.yml': u('ci'), 'deploy.yml': u('deploy').replace(`@${SHA}`, '@' + 'c'.repeat(40)) }), ['pins']).code, 1);
   assert.equal(run(caller({}, { 'ci.yml': u('ci').replace(`@${SHA}`, '@v1.0.0') }), ['pins']).code, 1);
   assert.equal(run(caller({}, {}), ['pins']).code, 1);
+  const flow = `jobs:\n  x:\n    uses: jukeboxprint/jukebox-workers/.github/workflows/worker-ci.yml@${SHA}\n    with: { pipeline_ref: ${SHA}, environment_staging: a-staging }\n`;
+  assert.equal(run(caller({}, { 'ci.yml': flow }), ['pins']).code, 0, 'flow-style with: { pipeline_ref: sha, ... }');
 });
 test('changed: only folders whose release.json or wrangler.toml changed', () => {
   const d = caller({ inflow: { name: 'jbx-inflow' }, 'inflow-jobs': { name: 'jbx-inflow-jobs' } });
