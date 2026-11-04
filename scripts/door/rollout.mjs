@@ -10,6 +10,8 @@
 //   3. Each step below 100: `wrangler versions deploy old@(100-p)% new@p%`, then watch Workers analytics per version
 //      for watch_minutes (longer, up to max_watch_minutes, until min_requests reach the new version). Breach or too
 //      little traffic: `wrangler versions deploy old@100%` and exit 1.
+//      An analytics read that fails (an API timeout) is retried (analytics_tries, default 3, analytics_retry_s apart)
+//      before it counts as unreadable and rolls back.
 //   4. 100%: new@100%, then the health paths must answer as pipeline.json says, polled for up to health_wait_s (default
 //      90, every health_poll_s, default 5) while the new version reaches every edge (else back to old@100%).
 // A deploy command that fails is checked against the real deployment: anything but old@100% is put back. A rollback
@@ -21,7 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { worker, smokeList, pollHealth } from './worker.mjs';
+import { worker, smokeList, pollHealth, retryRead } from './worker.mjs';
 
 const { WORKER, WD, PIPE } = worker();
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -240,7 +242,10 @@ for (const p of STEPS) {
     await sleep(CFG.poll_seconds * 1000);
     const mins = (Date.now() - t0) / 60000 / SCALE;
     let nw, old;
-    try { [nw, old] = await Promise.all([stats(newV, t0), stats(oldV, t0)]); }
+    try {
+      [nw, old] = await retryRead(() => Promise.all([stats(newV, t0), stats(oldV, t0)]), { tries: CFG.analytics_tries, wait_s: CFG.analytics_retry_s, sleep,
+        onRetry: (attempt, e) => log({ step: 'analytics_retry', pct: p, attempt, why: String(e && e.message || e).slice(0, 120) }) });
+    }
     catch (e) { await back(oldV, 'analytics unreadable: ' + String(e.message || e).slice(0, 120)); }
     const v = judge(nw, old);
     log({ step: 'watch', pct: p, minutes: Math.round(mins * 10) / 10, new: nw, old, verdict: v });
