@@ -165,6 +165,10 @@ jobs:
           else
             node "$P/scripts/door/rollout.mjs" --worker "$W" --env staging --steps 100 --message "$W $VERSION $SHA" --tag "$SHA"
           fi
+      - name: Crons on staging (the toml's [triggers]; a version deploy does not set them)
+        if: ${{ steps.sw.outputs.on == 'true' }}
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/door/triggers.mjs" --worker "$W" --env staging
       - name: Smoke test staging (no secrets sent)
         if: ${{ steps.sw.outputs.on == 'true' }}
         env: { KIND: '${{ steps.sw.outputs.kind }}' }
@@ -219,6 +223,9 @@ jobs:
       - name: Rollout (pipeline.json rollout), automatic rollback on a breach
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --message "$W $VERSION $SHA" --tag "$SHA" | tee rollout.ndjson
+      - name: Crons on live (the toml's [triggers]; a version deploy does not set them)
+        env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
+        run: node "$P/scripts/door/triggers.mjs" --worker "$W" --env live | tee crons.json
       - name: Live script is now the release, byte for byte
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
@@ -234,4 +241,4 @@ jobs:
       - name: Summary
         if: ${{ always() }}
         run: |
-          { echo "### $W $VERSION"; echo '```'; cat drift-before.json rollout.ndjson drift-after.json 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### $W $VERSION"; echo '```'; cat drift-before.json rollout.ndjson crons.json drift-after.json 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

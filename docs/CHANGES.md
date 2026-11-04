@@ -1,5 +1,21 @@
 # Changes
 
+## v1.0.4 (2026-11-04)
+
+- Cron triggers (`[triggers] crons` in a Worker's wrangler.toml), asked for by the accounting session so jbx-accounting's
+  nightly reconcile can run on its own. Until now the pipeline refused any cron.
+  - `scripts/door/proof.mjs`: each cron must be five valid fields, and the release must have a `scheduled()` handler.
+  - `scripts/door/drift.mjs`: the Worker's schedules are compared with the toml's crons for that env (an env inherits
+    the top level unless it sets its own). None set yet while the toml has some: noted (the deploy sets them). Any other
+    difference: refused on live, noted on staging, as for other bindings.
+  - `scripts/door/triggers.mjs` (new) and two steps in `worker-deploy.yml`: after the staging deploy and after the live
+    rollout, `wrangler triggers deploy` when the schedules differ from the toml (a version deploy does not set them),
+    then the schedules are read back and must match.
+  - Crons are not versioned: a rollback of the script keeps them. A release that adds a cron ships its handler in the
+    same release; a rollback past it should also take the cron out by PR.
+  - Helpers `cronsFor`, `validCron`, `cronPlan` in `scripts/door/worker.mjs`. Tests: `tests/scripts/worker.test.mjs`,
+    `tests/scripts/triggers.test.mjs` (a fake Cloudflare API and wrangler). Packages unchanged.
+
 ## v1.0.3 (2026-11-04)
 
 - `scripts/door/rollout.mjs`: during a gradual rollout's watch, an analytics read that fails (an API timeout) is retried
