@@ -4,7 +4,7 @@
 #   jobs:
 #     ci:
 #       uses: jukeboxprint/jukebox-workers/.github/workflows/worker-ci.yml@<sha>   # vX.Y.Z
-#       with: { pipeline_ref: <the same sha> }
+#       with: { pipeline_ref: <the same sha> }        # optional: npm_script: test:workers ('' = none; default test)
 # Checks: the repo follows the pattern (names, staging names, one account, pins), the caller's wrangler is the
 # pipeline's version, and for every Worker: proof (release = build of src/, byte for byte; upload form = the toml;
 # size and growth against the base), typecheck when the Worker has a tsconfig.json, its check.mjs and its tests.
@@ -17,6 +17,11 @@ on:
         description: 'The jukebox-workers commit the caller pinned (must equal the uses: sha)'
         type: string
         required: true
+      npm_script:
+        description: "The caller's npm script run last (default 'test'; '' = none). For a repo whose root npm test is not the Workers' (v1.0.5)"
+        type: string
+        required: false
+        default: 'test'
 
 permissions:
   contents: read
@@ -80,5 +85,10 @@ jobs:
             shopt -u nullglob
             echo "::endgroup::"
           done
-      - name: The caller's npm test (if it has one)
-        run: if jq -e '.scripts.test' package.json >/dev/null; then npm test; fi
+      - name: The caller's npm script (npm_script, default test; if it has one)
+        env:
+          SCRIPT: ${{ inputs.npm_script }}
+        run: |
+          if [ -z "$SCRIPT" ]; then echo "npm_script is empty: no npm script"; exit 0; fi
+          if ! printf '%s' "$SCRIPT" | grep -Eq '^[A-Za-z0-9:_.-]{1,64}$'; then echo "npm_script '$SCRIPT' is not a script name"; exit 1; fi
+          if jq -e --arg s "$SCRIPT" '.scripts[$s]' package.json >/dev/null; then npm run "$SCRIPT"; else echo "no script $SCRIPT: skipped"; fi
