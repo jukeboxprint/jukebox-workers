@@ -204,6 +204,21 @@ viewer → jbx-front-door: sign-in, cookie, role check (door D1 route_roles)
 - **Rollback ladder** (fastest first): config switch → `door_routes` mode `off` (back to n8n) → Rollback workflow →
   dashboard Deployments → Rollback.
 
+## 10a. Write routes and cut-overs: required checks
+
+Required for every page and every write route (POST saves, GETs that change data, runs that create POs or send mail).
+(Tyler, 4 Nov 2026.) Why: after `/jbx-reorder` moved to jbx-inflow on 4 Nov 2026, saves failed silently (the page saved
+by GET, the door row allowed POST only, so saves fell through to n8n, whose sign-in/csrf gate refused them), then
+intermittent 503s, then a manager's Run now bounced at the Auth Gate. Status codes and error rates looked healthy.
+
+| # | Rule | How it is checked |
+|---|---|---|
+| 1 | **Count refusals.** Every write route counts its refusals (302 and 403 from sign-in or csrf checks) per route, at the door and in the Worker. A jump alerts even when status codes look healthy. | The route's counters and alert are named in the Worker's ARCHITECTURE.md; the gradual rollout also rolls back on a jump in 302/403 (pipeline v1.0.6). |
+| 2 | **Old tabs.** Across a cut-over, a page opened before it keeps working for a day (tokens from either side accepted, or the save handed back) or shows a clear "reload the page" message. Never a role or permission refusal. | A test saves from a page loaded before the switch, on staging, before shadow and before live. |
+| 3 | **Test every action** on a write page (each form, link and button), including refused and expired sessions, before shadow and before live. | A checklist of every action with its result, in the cut-over PR. |
+| 4 | **Dry-run mode** for anything that creates POs or sends mail: a config switch, dry-run by default in staging and for the first live run. | The switch is in D1 config; the first live run's note shows it dry. |
+| 5 | **One named staff tester** per page (in the page's `docs/ARCHITECTURE.md`), and a staff heads-up before each cut-over: who, when, how to report. | The name is in ARCHITECTURE.md; the heads-up is linked in the cut-over PR. |
+
 ## 11. n8n's role and its code
 
 - Allowed in n8n: triggers and schedules that call Worker endpoints, third-party steps not yet on Workers (inFlow writes,
@@ -250,7 +265,8 @@ file at build time. No Worker writes its own copy.
 PR → CI → merge (staging) → hand-started live on Tyler's word · never the dashboard editor or a paste · bindings and vars
 only by PR · secrets only in Cloudflare/n8n, names in `secrets.json` · staging has its own values and no live data ·
 every release bumps `release.json` with `vN (YYYY-MM-DD): …` · `src/gen` and `n8n/*` regenerated, never hand-edited ·
-no data in n8n · real-data fixtures never in git · dated docs, written plainly and briefly.
+no data in n8n · real-data fixtures never in git · write routes and cut-overs meet section 10a (refusals counted, old
+tabs, every action tested, dry-run, named tester) · dated docs, written plainly and briefly.
 
 ---
 
