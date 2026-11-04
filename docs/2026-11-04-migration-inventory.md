@@ -153,3 +153,20 @@ move with an owner.
    and #2, analytics #21, copilot #220.
 5. **jukebox-template:** a one-line fix for areas with a hyphen. The test signs with the hyphen; init.mjs drops it.
    Analytics found it, and it needs a session with access to that repo.
+6. **Direct BigQuery keys.** PATTERN section 7 routes BigQuery reads and writes through `jbx-bq`. Two open PRs each add
+   a `BQ_SA_JSON` instead:
+   - copilot-suggest v8 (copilot #220) for a read;
+   - copilot-jobs v6 (copilot #221) for `insertAll` writes.
+   Approve them as time-boxed exceptions with a removal step, or ask for the jbx-bq path?
+
+## PATTERN review of the open PRs (4 Nov 2026)
+
+Posted as PR comments, real gaps only:
+
+| PR | Result |
+|---|---|
+| jukebox-prepress-watch #1 | No blocking gap. `package.json` pins the pipeline at v1.0.0 while the workflows pin v1.0.4 (a local proof fails once #2's cron lands; CI is fine). |
+| jukebox-prepress-watch #2 | Box keys aren't tied to their box's slot (the slot comes from the body's `host`). Fix before Tyler sets the box keys. Tests are missing for that and for `/heartbeat`'s time window. |
+| jukebox-copilot #220 | A direct BigQuery key on copilot-suggest (item 6). Otherwise clean, and its tests pass. |
+| jukebox-copilot #221 | Three problems: a removed cron is never taken off, a rollback keeps the cron, and the crons are listed in pipeline.json as well as the toml. It also adds a direct BigQuery write (item 6). Now a draft, being reworked onto v1.0.4's `triggers.mjs`. |
+| jukebox-analytics #21 | The plan should state the section 10 gate, list the door rows it needs, and say how snapshot cadence diffs are kept out of shadow. |
