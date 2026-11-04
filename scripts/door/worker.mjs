@@ -146,3 +146,36 @@ export const cronPlan = (want, have) => {
   const a = [...new Set(want)].sort(), b = [...new Set(have)].sort();
   return a.length === b.length && a.every((x, i) => x === b[i]) ? 'same' : 'set';
 };
+
+// Refusals during a gradual rollout (v1.0.6): responses with HTTP 302 or 403, as a share of each version's requests.
+// A write route that starts refusing (sign-in or csrf: "Not allowed for your role") looks healthy by status code and
+// error rate (jbx-inflow /jbx-reorder, 4 Nov 2026; PATTERN rule 10a.1). pipeline.json rollout.*:
+//   refusals                  false = not checked (default on)
+//   max_refusal_share_vs_old  new share must exceed old share × this to breach (default 2)
+//   min_refusal_excess        and exceed it by at least this, absolute (default 0.05)
+// Judged only once the new version has rollout.min_requests (as the error rate is). A bad setting = the default.
+export const REFUSAL_STATUSES = [302, 403];
+export function refusalSettings(rollout) {
+  const c = rollout || {};
+  const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : d);
+  return { on: c.refusals !== false, vs_old: num(c.max_refusal_share_vs_old, 2), min_excess: num(c.min_refusal_excess, 0.05),
+    min_requests: num(c.min_requests, 0) };
+}
+// rows: workersInvocationsAdaptive grouped by httpResponseStatus. Returns { requests, refused, share }.
+export function refusalCount(rows) {
+  let requests = 0, refused = 0;
+  for (const r of rows || []) {
+    const n = Number(((r || {}).sum || {}).requests) || 0;
+    requests += n;
+    if (REFUSAL_STATUSES.includes(Number(((r || {}).dimensions || {}).httpResponseStatus))) refused += n;
+  }
+  return { requests, refused, share: requests ? refused / requests : 0 };
+}
+// null when fine (or too few requests to judge), else why. nw / old: refusalCount() results.
+export function judgeRefusals(nw, old, s) {
+  if (!s.on || !nw || !old || nw.requests < s.min_requests) return null;
+  if (nw.share > old.share * s.vs_old && nw.share - old.share >= s.min_excess) {
+    return `refusals (302/403) ${nw.share.toFixed(4)} (${nw.refused}/${nw.requests}; old ${old.share.toFixed(4)}, ${old.refused}/${old.requests})`;
+  }
+  return null;
+}

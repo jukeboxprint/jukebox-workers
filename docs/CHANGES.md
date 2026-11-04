@@ -1,5 +1,18 @@
 # Changes
 
+## v1.0.6 (2026-11-04)
+
+- `scripts/door/rollout.mjs`: the gradual rollout's watch also compares refusals (HTTP 302 and 403) between the new and
+  old versions. A second Workers analytics query per version groups by `httpResponseStatus`. Refusal share = refused /
+  requests. Once the new version has `min_requests`, it is a breach (rolls back like any other) when the new share is
+  more than `rollout.max_refusal_share_vs_old` × the old one (default 2) and at least `rollout.min_refusal_excess`
+  above it (default 0.05). `rollout.refusals: false` turns it off. Each watch line logs both versions' `refusals`.
+  Why: the jbx-inflow cut-over (4 Nov 2026) refused saves with 302/403 ("Not allowed for your role") while status
+  codes and error rate looked healthy. This is the rollout-time guard; per-route counting lives in each Worker and the
+  door (PATTERN 10a rule 1). Helpers `refusalSettings`, `refusalCount`, `judgeRefusals` in `scripts/door/worker.mjs`.
+  Tests: `tests/scripts/worker.test.mjs`, `tests/scripts/rollout.test.mjs` (a fake Cloudflare API and wrangler).
+  Packages unchanged.
+
 ## v1.0.5 (2026-11-04)
 
 - `worker-ci.yml`: new optional input `npm_script` (default `test`, so nothing changes for today's callers). Worker CI's
