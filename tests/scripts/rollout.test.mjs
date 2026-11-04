@@ -48,6 +48,12 @@ const api = http.createServer((req, res) => {
       let rows;
       if (query.includes('httpResponseStatus')) {
         st.refQueries = (st.refQueries || 0) + 1; fs.writeFileSync(STATE, JSON.stringify(st));
+        // refMode: how a wrong field (or a bad day) answers: a GraphQL error with no data, data null, HTTP 500, or rows
+        // without the status field.
+        if (st.refMode === 'gqlError') return res.end(JSON.stringify({ data: null, errors: [{ message: 'unknown field "httpResponseStatus"' }] }));
+        if (st.refMode === 'null') return res.end(JSON.stringify({ data: null }));
+        if (st.refMode === 'http500') { res.statusCode = 500; return res.end(JSON.stringify({ errors: [{ message: 'down' }] })); }
+        if (st.refMode === 'shape') return res.end(JSON.stringify({ data: { viewer: { accounts: [{ workersInvocationsAdaptive: [{ dimensions: {}, sum: { requests: t.requests } }] }] } } }));
         const refused = Object.values(t.ref).reduce((a, b) => a + b, 0);
         rows = [{ dimensions: { httpResponseStatus: 200 }, sum: { requests: t.requests - refused } },
           ...Object.entries(t.ref).map(([s, n]) => ({ dimensions: { httpResponseStatus: Number(s) }, sum: { requests: n } }))];
@@ -59,9 +65,9 @@ const api = http.createServer((req, res) => {
     res.statusCode = 404; res.end(JSON.stringify({ success: false, errors: [{ message: 'not found' }] }));
   });
 }).listen(0);
-const run = (traffic, extra) => new Promise(resolve => {
+const run = (traffic, extra, refMode) => new Promise(resolve => {
   pipeline(extra);
-  fs.writeFileSync(STATE, JSON.stringify({ dep: [{ version_id: OLD, percentage: 100 }], traffic }));
+  fs.writeFileSync(STATE, JSON.stringify({ dep: [{ version_id: OLD, percentage: 100 }], traffic, refMode }));
   const base = `http://127.0.0.1:${api.address().port}`;
   const p = spawn(process.execPath, [SCRIPT, '--worker', 'x', '--env', 'live'], { env: Object.assign({}, process.env, {
     JBX_REPO_ROOT: root, CLOUDFLARE_API_TOKEN: 't', CF_API_BASE: base, DOOR_HOST: base, DOOR_WRANGLER: FW, DOOR_TIME_SCALE: '0.001' }) });
@@ -95,4 +101,17 @@ test('refusals: false turns the check off (no refusal query)', async () => {
   assert.equal(r.code, 0, JSON.stringify(r.last)); assert.ok(!r.state.refQueries);
   assert.equal(r.watches[0].new.refusals, undefined);
 });
+// Fail-safe: the status field is unconfirmed on the live API, so a refusal read that fails never rolls back. The same
+// traffic as the jump test, which would roll back if the read worked, goes to 100% as it would without the check.
+for (const mode of ['gqlError', 'null', 'http500', 'shape']) {
+  test(`refusals: an unreadable refusal query (${mode}) is logged and skipped, never a rollback`, async () => {
+    const r = await run({ [OLD]: { requests: 9000, ref: { 302: 90 } }, [NEW]: { requests: 1000, ref: { 302: 150, 403: 100 } } }, {}, mode);
+    assert.equal(r.code, 0, JSON.stringify(r.last)); assert.equal(r.last.step, 'done');
+    assert.deepEqual(r.state.dep, [{ version_id: NEW, percentage: 100 }]);
+    const u = r.lines.filter(l => l.step === 'refusals_unreadable');
+    assert.equal(u.length, r.watches.length); assert.ok(u[0].why);
+    assert.ok(!r.lines.some(l => l.step === 'rolled_back' || l.step === 'analytics_retry'));
+    assert.equal(r.watches[0].new.refusals, undefined);
+  });
+}
 test.after(() => { api.close(); fs.rmSync(dir, { recursive: true, force: true }); });

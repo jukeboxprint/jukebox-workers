@@ -7,6 +7,9 @@
   requests. Once the new version has `min_requests`, it is a breach (rolls back like any other) when the new share is
   more than `rollout.max_refusal_share_vs_old` × the old one (default 2) and at least `rollout.min_refusal_excess`
   above it (default 0.05). `rollout.refusals: false` turns it off. Each watch line logs both versions' `refusals`.
+  Fail-safe: the status field is not yet confirmed on the live API, so a refusal read that fails or comes back in an
+  unexpected shape logs `step: refusals_unreadable` and skips the check for that watch. It never counts as "analytics
+  unreadable" and never rolls back; only a jump that was read rolls back.
   Why: the jbx-inflow cut-over (4 Nov 2026) refused saves with 302/403 ("Not allowed for your role") while status
   codes and error rate looked healthy. This is the rollout-time guard; per-route counting lives in each Worker and the
   door (PATTERN 10a rule 1). Helpers `refusalSettings`, `refusalCount`, `judgeRefusals` in `scripts/door/worker.mjs`.

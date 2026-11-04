@@ -14,7 +14,8 @@
 //      before it counts as unreadable and rolls back.
 //      Refusals (v1.0.6): HTTP 302/403 as a share of each version's requests. The new share above the old by more than
 //      max_refusal_share_vs_old× (default 2) and by at least min_refusal_excess (default 0.05) is a breach
-//      (worker.mjs judgeRefusals; refusals: false turns it off).
+//      (worker.mjs judgeRefusals; refusals: false turns it off). A refusal read that fails is logged
+//      (refusals_unreadable) and skipped for that watch: it never rolls back.
 //   4. 100%: new@100%, then the health paths must answer as pipeline.json says, polled for up to health_wait_s (default
 //      90, every health_poll_s, default 5) while the new version reaches every edge (else back to old@100%).
 // A deploy command that fails is checked against the real deployment: anything but old@100% is put back. A rollback
@@ -149,14 +150,21 @@ async function refusals(version, since) {
       dimensions{httpResponseStatus} sum{requests}}}}}`;
   const j = await api('/graphql', { method: 'POST', body: JSON.stringify({ query: q,
     variables: { a: ACCT, s: new Date(since).toISOString(), e: new Date().toISOString(), n: NAME, v: version } }) });
-  return refusalCount((((j.data || {}).viewer || {}).accounts || [{}])[0].workersInvocationsAdaptive || []);
+  if (j.errors && j.errors.length) throw new Error('graphql: ' + JSON.stringify(j.errors).slice(0, 160));
+  const acc = ((((j || {}).data || {}).viewer || {}).accounts || [])[0];
+  const rows = acc && acc.workersInvocationsAdaptive;
+  if (!Array.isArray(rows) || rows.some(r => !r || !r.dimensions || !('httpResponseStatus' in r.dimensions) || !r.sum || typeof r.sum.requests !== 'number')) {
+    throw new Error('unexpected shape: ' + JSON.stringify(rows === undefined ? j : rows).slice(0, 160));
+  }
+  return refusalCount(rows);
 }
-// Both versions' stats, plus their refusals unless rollout.refusals is false: [new, old], each with .refusals.
-async function read(newV, oldV, t0) {
-  const [nw, old, rn, ro] = await Promise.all([stats(newV, t0), stats(oldV, t0),
-    ...(REF.on ? [refusals(newV, t0), refusals(oldV, t0)] : [])]);
-  if (REF.on) { nw.refusals = rn; old.refusals = ro; }
-  return [nw, old];
+// Refusals for both versions, fail-safe: the status field is not yet confirmed against the live API, so a read that
+// fails or comes back in an unexpected shape is logged (step refusals_unreadable) and the check is skipped for this
+// watch. It never counts as "analytics unreadable" and never rolls back: only a jump that was read rolls back.
+async function readRefusals(nw, old, newV, oldV, t0, p) {
+  if (!REF.on) return;
+  try { [nw.refusals, old.refusals] = await Promise.all([refusals(newV, t0), refusals(oldV, t0)]); }
+  catch (e) { delete nw.refusals; delete old.refusals; log({ step: 'refusals_unreadable', pct: p, why: String(e && e.message || e).slice(0, 200) }); }
 }
 
 function judge(nw, old) {
@@ -266,10 +274,11 @@ for (const p of STEPS) {
     const mins = (Date.now() - t0) / 60000 / SCALE;
     let nw, old;
     try {
-      [nw, old] = await retryRead(() => read(newV, oldV, t0), { tries: CFG.analytics_tries, wait_s: CFG.analytics_retry_s, sleep,
+      [nw, old] = await retryRead(() => Promise.all([stats(newV, t0), stats(oldV, t0)]), { tries: CFG.analytics_tries, wait_s: CFG.analytics_retry_s, sleep,
         onRetry: (attempt, e) => log({ step: 'analytics_retry', pct: p, attempt, why: String(e && e.message || e).slice(0, 120) }) });
     }
     catch (e) { await back(oldV, 'analytics unreadable: ' + String(e.message || e).slice(0, 120)); }
+    await readRefusals(nw, old, newV, oldV, t0, p);
     const v = judge(nw, old);
     log({ step: 'watch', pct: p, minutes: Math.round(mins * 10) / 10, new: nw, old, verdict: v });
     if (v !== 'ok' && v !== 'wait') await back(oldV, v);

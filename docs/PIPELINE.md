@@ -95,7 +95,8 @@ jobs:
   D1 migrations → rollout per `pipeline.json` → drift again; any failure or cancel puts the old version back.
   The rollout watch rolls back on errors, latency, and (v1.0.6) a jump in refusals: the new version's share of HTTP
   302/403 above 2× the old one's and at least 0.05 higher (`rollout.max_refusal_share_vs_old`,
-  `rollout.min_refusal_excess`; `rollout.refusals: false` turns it off).
+  `rollout.min_refusal_excess`; `rollout.refusals: false` turns it off). A refusal read that fails is logged
+  (`refusals_unreadable`) and skipped, never a rollback.
 - **Rollback by hand:** `wrangler rollback`, then the smoke list.
 - **D1:** creates any database the tomls name and prints ids; the ids go into the toml by PR.
 
