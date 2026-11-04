@@ -1,5 +1,14 @@
 # Changes
 
+## v1.0.3 (2026-11-04)
+
+- `scripts/door/rollout.mjs`: during a gradual rollout's watch, an analytics read that fails (an API timeout) is retried
+  before it counts as "analytics unreadable" and rolls back. One such timeout rolled back a healthy front door v51 on
+  4 Nov 2026 (0 errors on the new version). New optional `rollout.analytics_tries` (default 3; 1 = as before) and
+  `rollout.analytics_retry_s` (default 10). Each retry is logged (`step: analytics_retry`). A breach still rolls back at
+  once; only a failed read is retried. The loop is `retryRead` in `scripts/door/worker.mjs` (tests in
+  `tests/scripts/worker.test.mjs`). Packages unchanged.
+
 ## v1.0.2 (2026-11-03)
 
 - `scripts/door/rollout.mjs`: health after a deploy (100%, and `--bootstrap`) is polled until the health paths answer

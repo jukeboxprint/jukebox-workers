@@ -111,3 +111,19 @@ export async function pollHealth(check, { wait_s, poll_s, sleep }) {
   }
   return { ok: false, why: `${why} (${tries} ${tries === 1 ? 'read' : 'reads'} over ${wait} s)`, tries };
 }
+
+// A read the rollout judges by (Workers analytics per version), retried before it counts as unreadable: one API timeout
+// rolled back a healthy front door v51 on 4 Nov 2026 ("analytics unreadable: The operation was aborted due to
+// timeout"). read() is tried up to tries times (pipeline.json rollout.analytics_tries, default 3), wait_s apart
+// (rollout.analytics_retry_s, default 10); onRetry(attempt, error) is told before each retry. Returns read()'s value, or
+// throws the last error. A breach is not an error: only a read that fails is retried.
+export async function retryRead(read, { tries, wait_s, sleep, onRetry }) {
+  const n = Math.max(1, Math.floor(Number(tries) > 0 ? Number(tries) : 3));
+  const wait = Number(wait_s) >= 0 && wait_s !== '' && wait_s != null ? Number(wait_s) : 10;
+  let last;
+  for (let i = 0; i < n; i++) {
+    if (i) { if (onRetry) onRetry(i + 1, last); await sleep(wait * 1000); }
+    try { return await read(); } catch (e) { last = e; }
+  }
+  throw last;
+}

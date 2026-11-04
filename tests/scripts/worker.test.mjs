@@ -49,3 +49,30 @@ test('pollHealth: missing settings default to 90 s every 5 s (19 reads)', async 
   const r = await pollHealth(seq(['no']), { sleep: noSleep });
   assert.equal(r.tries, 19);
 });
+
+// retryRead: an analytics read that fails is retried before the rollout counts it as unreadable.
+import { retryRead } from '../../scripts/door/worker.mjs';
+const flaky = outcomes => { let i = 0; return async () => { const o = outcomes[Math.min(i++, outcomes.length - 1)]; if (o instanceof Error) throw o; return o; }; };
+test('retryRead: a good first read is one read, no retry', async () => {
+  const seen = [];
+  assert.deepEqual(await retryRead(flaky([['n', 'o']]), { tries: 3, wait_s: 10, sleep: noSleep, onRetry: a => seen.push(a) }), ['n', 'o']);
+  assert.deepEqual(seen, []);
+});
+test('retryRead: one timeout, then a good read: the good read, one retry told, one wait', async () => {
+  const seen = [], slept = [];
+  const r = await retryRead(flaky([new Error('The operation was aborted due to timeout'), ['n', 'o']]), { tries: 3, wait_s: 10, sleep: async ms => { slept.push(ms); }, onRetry: (a, e) => seen.push([a, e.message]) });
+  assert.deepEqual(r, ['n', 'o']); assert.deepEqual(seen, [[2, 'The operation was aborted due to timeout']]); assert.deepEqual(slept, [10000]);
+});
+test('retryRead: unreadable every time: throws the last error after tries reads', async () => {
+  let reads = 0;
+  await assert.rejects(retryRead(async () => { reads++; throw new Error('timeout ' + reads); }, { tries: 3, wait_s: 10, sleep: noSleep }), /timeout 3/);
+  assert.equal(reads, 3);
+});
+test('retryRead: missing settings default to 3 tries; tries 1 is one read, as before', async () => {
+  let reads = 0;
+  await assert.rejects(retryRead(async () => { reads++; throw new Error('x'); }, { sleep: noSleep }));
+  assert.equal(reads, 3);
+  reads = 0;
+  await assert.rejects(retryRead(async () => { reads++; throw new Error('x'); }, { tries: 1, sleep: noSleep }));
+  assert.equal(reads, 1);
+});
