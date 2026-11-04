@@ -193,12 +193,14 @@ viewer → jbx-front-door: sign-in, cookie, role check (door D1 route_roles)
 
 | Kind | Proof | Gate to live |
 |---|---|---|
-| Page / read | same input → same body hash as n8n (`parity.mjs`), then shadow on real traffic | zero unexplained differences over 3 weekdays |
+| Page / read | same input → same body hash as n8n (`parity.mjs`), then shadow on real traffic | read-only GET: one business day of real views with zero unexplained differences. Anything that writes (POST saves, GETs that change data): zero unexplained differences over 3 weekdays |
 | AI output | blind grading under `ai-eval-protocol` | Tyler's call on the graded result |
 | Data table | the Worker API writes D1 and the n8n table together; reads switch to D1; the n8n table becomes a read-only mirror | one clean week, then delete the table |
 | n8n route / workflow | route at `live` | one clean week → unpublish → archive after a month |
 
 - **Clean week**: 7 days with 5 weekdays, no rollback and no unexplained difference.
+- Page / read gate: one business day for read-only GET rows, 3 weekdays for anything that writes (Tyler, 4 Nov 2026;
+  was 3 weekdays for all).
 - **Rollback ladder** (fastest first): config switch → `door_routes` mode `off` (back to n8n) → Rollback workflow →
   dashboard Deployments → Rollback.
 
