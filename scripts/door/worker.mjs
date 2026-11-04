@@ -127,3 +127,22 @@ export async function retryRead(read, { tries, wait_s, sleep, onRetry }) {
   }
   throw last;
 }
+
+// Cron triggers ([triggers] crons in wrangler.toml; an env inherits the top level unless it sets its own, as wrangler
+// does). jbx-accounting's nightly reconcile is the first (4 Nov 2026). proof checks them, drift compares them with the
+// Worker's schedules, and scripts/door/triggers.mjs sets them after a deploy (`wrangler versions deploy` does not).
+export const cronsFor = (toml, env) => {
+  const c = envConfig(toml, env);
+  return [...new Set(((c.triggers || {}).crons || []).map(s => String(s).trim()))].sort();
+};
+// Five fields: minute hour day-of-month month day-of-week; numbers, *, ranges, lists, steps, and the day / month names
+// Cloudflare accepts. A typo is refused here rather than by Cloudflare at deploy time.
+export const validCron = s => {
+  const f = String(s).trim().split(/\s+/);
+  return f.length === 5 && f.every(x => /^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(\/[0-9]+)?(,(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(\/[0-9]+)?)*$/.test(x));
+};
+// What the deploy must do: 'same' (nothing), or 'set' (wrangler triggers deploy). have = the Worker's schedules.
+export const cronPlan = (want, have) => {
+  const a = [...new Set(want)].sort(), b = [...new Set(have)].sort();
+  return a.length === b.length && a.every((x, i) => x === b[i]) ? 'same' : 'set';
+};

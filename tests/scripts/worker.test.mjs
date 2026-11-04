@@ -76,3 +76,25 @@ test('retryRead: missing settings default to 3 tries; tries 1 is one read, as be
   await assert.rejects(retryRead(async () => { reads++; throw new Error('x'); }, { tries: 1, sleep: noSleep }));
   assert.equal(reads, 1);
 });
+
+// Cron triggers: the toml's [triggers] crons per env, checked and compared.
+import { cronsFor, validCron, cronPlan } from '../../scripts/door/worker.mjs';
+test('cronsFor: top-level crons, inherited by an env that sets none; an env\'s own replace them', () => {
+  const t = { name: 'jbx-x', triggers: { crons: ['*/15 10-13 * * *'] }, env: { staging: { name: 'jbx-x-staging' } } };
+  assert.deepEqual(cronsFor(t, 'live'), ['*/15 10-13 * * *']);
+  assert.deepEqual(cronsFor(t, 'staging'), ['*/15 10-13 * * *']);
+  t.env.staging.triggers = { crons: [] };
+  assert.deepEqual(cronsFor(t, 'staging'), []);
+  assert.deepEqual(cronsFor({ name: 'jbx-y' }, 'live'), []);
+});
+test('validCron: five fields; ranges, lists, steps and names; typos refused', () => {
+  for (const ok of ['*/15 10-13 * * *', '0 3 * * 1-5', '30 2 1,15 * MON', '0 */6 * * *']) assert.ok(validCron(ok), ok);
+  for (const bad of ['*/15 10-13 * *', '0 3 * * * *', '0 3 * * ?', '', '0 3 ** * *']) assert.ok(!validCron(bad), bad);
+});
+test('cronPlan: same set in any order is same; added, removed or changed is set', () => {
+  assert.equal(cronPlan(['0 3 * * *', '0 4 * * *'], ['0 4 * * *', '0 3 * * *']), 'same');
+  assert.equal(cronPlan([], []), 'same');
+  assert.equal(cronPlan(['0 3 * * *'], []), 'set');
+  assert.equal(cronPlan([], ['0 3 * * *']), 'set');
+  assert.equal(cronPlan(['0 3 * * *'], ['0 4 * * *']), 'set');
+});
