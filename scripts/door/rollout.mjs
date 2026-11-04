@@ -12,6 +12,10 @@
 //      little traffic: `wrangler versions deploy old@100%` and exit 1.
 //      An analytics read that fails (an API timeout) is retried (analytics_tries, default 3, analytics_retry_s apart)
 //      before it counts as unreadable and rolls back.
+//      Refusals (v1.0.6): HTTP 302/403 as a share of each version's requests. The new share above the old by more than
+//      max_refusal_share_vs_old× (default 2) and by at least min_refusal_excess (default 0.05) is a breach
+//      (worker.mjs judgeRefusals; refusals: false turns it off). A refusal read that fails is logged
+//      (refusals_unreadable) and skipped for that watch: it never rolls back.
 //   4. 100%: new@100%, then the health paths must answer as pipeline.json says, polled for up to health_wait_s (default
 //      90, every health_poll_s, default 5) while the new version reaches every edge (else back to old@100%).
 // A deploy command that fails is checked against the real deployment: anything but old@100% is put back. A rollback
@@ -23,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { worker, smokeList, pollHealth, retryRead } from './worker.mjs';
+import { worker, smokeList, pollHealth, retryRead, refusalSettings, refusalCount, judgeRefusals } from './worker.mjs';
 
 const { WORKER, WD, PIPE } = worker();
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -138,9 +142,36 @@ async function stats(version, since) {
   return { requests: req, errors: err, error_rate: req ? err / req : 0, p50_ms: Math.round(p50), p99_ms: Math.round(p99), success: okReq };
 }
 
+// HTTP 302 and 403 per version since t0: the same dataset, grouped by the response status the Worker returned.
+const REF = refusalSettings(CFG);
+async function refusals(version, since) {
+  const q = `query($a:String!,$s:Time!,$e:Time!,$n:String!,$v:String!){viewer{accounts(filter:{accountTag:$a}){
+    workersInvocationsAdaptive(limit:1000,filter:{scriptName:$n,scriptVersion:$v,datetime_geq:$s,datetime_leq:$e}){
+      dimensions{httpResponseStatus} sum{requests}}}}}`;
+  const j = await api('/graphql', { method: 'POST', body: JSON.stringify({ query: q,
+    variables: { a: ACCT, s: new Date(since).toISOString(), e: new Date().toISOString(), n: NAME, v: version } }) });
+  if (j.errors && j.errors.length) throw new Error('graphql: ' + JSON.stringify(j.errors).slice(0, 160));
+  const acc = ((((j || {}).data || {}).viewer || {}).accounts || [])[0];
+  const rows = acc && acc.workersInvocationsAdaptive;
+  if (!Array.isArray(rows) || rows.some(r => !r || !r.dimensions || !('httpResponseStatus' in r.dimensions) || !r.sum || typeof r.sum.requests !== 'number')) {
+    throw new Error('unexpected shape: ' + JSON.stringify(rows === undefined ? j : rows).slice(0, 160));
+  }
+  return refusalCount(rows);
+}
+// Refusals for both versions, fail-safe: the status field is not yet confirmed against the live API, so a read that
+// fails or comes back in an unexpected shape is logged (step refusals_unreadable) and the check is skipped for this
+// watch. It never counts as "analytics unreadable" and never rolls back: only a jump that was read rolls back.
+async function readRefusals(nw, old, newV, oldV, t0, p) {
+  if (!REF.on) return;
+  try { [nw.refusals, old.refusals] = await Promise.all([refusals(newV, t0), refusals(oldV, t0)]); }
+  catch (e) { delete nw.refusals; delete old.refusals; log({ step: 'refusals_unreadable', pct: p, why: String(e && e.message || e).slice(0, 200) }); }
+}
+
 function judge(nw, old) {
   if (nw.requests < CFG.min_requests) return 'wait';
   const bad = [];
+  const ref = judgeRefusals(nw.refusals, old.refusals, REF);
+  if (ref) bad.push(ref);
   if (nw.error_rate > CFG.max_error_rate && nw.error_rate > old.error_rate * CFG.max_error_rate_vs_old) bad.push(`error rate ${nw.error_rate.toFixed(4)} (old ${old.error_rate.toFixed(4)})`);
   if (old.p50_ms && nw.p50_ms > old.p50_ms * CFG.max_p50_ms_vs_old) bad.push(`p50 ${nw.p50_ms} ms (old ${old.p50_ms})`);
   if (nw.success >= CFG.p99_min_requests && old.p99_ms && nw.p99_ms > old.p99_ms * CFG.max_p99_ms_vs_old) bad.push(`p99 ${nw.p99_ms} ms (old ${old.p99_ms})`);
@@ -247,6 +278,7 @@ for (const p of STEPS) {
         onRetry: (attempt, e) => log({ step: 'analytics_retry', pct: p, attempt, why: String(e && e.message || e).slice(0, 120) }) });
     }
     catch (e) { await back(oldV, 'analytics unreadable: ' + String(e.message || e).slice(0, 120)); }
+    await readRefusals(nw, old, newV, oldV, t0, p);
     const v = judge(nw, old);
     log({ step: 'watch', pct: p, minutes: Math.round(mins * 10) / 10, new: nw, old, verdict: v });
     if (v !== 'ok' && v !== 'wait') await back(oldV, v);

@@ -98,3 +98,33 @@ test('cronPlan: same set in any order is same; added, removed or changed is set'
   assert.equal(cronPlan([], ['0 3 * * *']), 'set');
   assert.equal(cronPlan(['0 3 * * *'], ['0 4 * * *']), 'set');
 });
+
+// Refusals (302/403) during a rollout: the new version's share against the old one's.
+import { refusalSettings, refusalCount, judgeRefusals } from '../../scripts/door/worker.mjs';
+const S = refusalSettings({ min_requests: 50 });
+const share = (requests, refused) => ({ requests, refused, share: requests ? refused / requests : 0 });
+test('refusalSettings: missing = on, 2x, 0.05; refusals false turns it off; a bad value = the default', () => {
+  assert.deepEqual(refusalSettings(undefined), { on: true, vs_old: 2, min_excess: 0.05, min_requests: 0 });
+  assert.equal(refusalSettings({ refusals: false }).on, false);
+  assert.deepEqual(refusalSettings({ max_refusal_share_vs_old: 'x', min_refusal_excess: -1 }), { on: true, vs_old: 2, min_excess: 0.05, min_requests: 0 });
+});
+test('refusalCount: counts 302 and 403 only, over all statuses', () => {
+  assert.deepEqual(refusalCount([{ dimensions: { httpResponseStatus: 200 }, sum: { requests: 80 } }, { dimensions: { httpResponseStatus: 302 }, sum: { requests: 10 } },
+    { dimensions: { httpResponseStatus: 403 }, sum: { requests: 5 } }, { dimensions: { httpResponseStatus: 401 }, sum: { requests: 5 } }]), share(100, 15));
+  assert.deepEqual(refusalCount([]), share(0, 0));
+});
+test('judgeRefusals: no change passes', () => {
+  assert.equal(judgeRefusals(share(1000, 40), share(9000, 360), S), null);
+});
+test('judgeRefusals: a jump breaches (from none, and from some)', () => {
+  assert.match(judgeRefusals(share(1000, 100), share(9000, 0), S), /^refusals \(302\/403\) 0\.1000/);
+  assert.match(judgeRefusals(share(1000, 250), share(9000, 90), S), /old 0\.0100/);
+});
+test('judgeRefusals: small samples do not trip (below min_requests, or below the absolute excess)', () => {
+  assert.equal(judgeRefusals(share(20, 20), share(9000, 0), S), null);
+  assert.equal(judgeRefusals(share(100, 4), share(9000, 0), S), null);
+});
+test('judgeRefusals: a big absolute rise under 2x the old share passes; off passes anything', () => {
+  assert.equal(judgeRefusals(share(1000, 300), share(9000, 1800), S), null);
+  assert.equal(judgeRefusals(share(1000, 900), share(9000, 0), refusalSettings({ refusals: false })), null);
+});
