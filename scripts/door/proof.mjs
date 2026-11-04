@@ -13,7 +13,8 @@
 //   4. settings (kind passthrough, live and staging): the non-versioned settings `wrangler versions deploy` patches
 //      after the upload (observability, logpush, tail consumers), as wrangler itself reads them from the toml: no
 //      observability (dashboard-managed: run 41325777020 showed a PATCH from the toml clearing live's), no logpush, no
-//      tail consumers; plus workers_dev on, preview_urls as pipeline.json and no triggers / placement / limits. The front
+//      tail consumers; plus workers_dev on, preview_urls as pipeline.json and no placement / limits; crons ([triggers])
+//      each valid, with a scheduled() handler in the release. The front
 //      door's toml sets none of these, so its upload form check ("no observability") is unchanged.
 // Prints one JSON line; exit 1 on any failure.
 import fs from 'node:fs';
@@ -23,7 +24,7 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { ROOT, HERE, worker, envConfig, wantBindings as bindingsFor, doBinding, lastMigrationTag } from './worker.mjs';
+import { ROOT, HERE, worker, envConfig, wantBindings as bindingsFor, doBinding, lastMigrationTag, cronsFor, validCron } from './worker.mjs';
 
 const { WORKER, WD, PIPE: CFG, KIND } = worker();
 const REL = JSON.parse(fs.readFileSync(path.join(WD, 'release.json'), 'utf8'));
@@ -132,7 +133,11 @@ if (KIND === 'passthrough') {
       // preview URLs: off unless pipeline.json says the live Worker has them on (jbx-desk-live, as live 1 Nov 2026).
       if (c.workers_dev !== true || c.preview_urls !== !!CFG.preview_urls) bad.push(`workers_dev ${c.workers_dev}, preview_urls ${c.preview_urls} (pipeline.json preview_urls ${!!CFG.preview_urls})`);
       if (c.no_bundle !== true || c.find_additional_modules !== false) bad.push('no_bundle / find_additional_modules');
-      if ((c.triggers && (c.triggers.crons || []).length) || c.placement || c.limits) bad.push('triggers / placement / limits set');
+      if (c.placement || c.limits) bad.push('placement / limits set');
+      // Crons ([triggers]): each a valid five-field cron, and the release has a scheduled() handler to run them.
+      const crons = cronsFor(toml, env);
+      for (const x of crons) if (!validCron(x)) bad.push('cron ' + JSON.stringify(x) + ' is not five valid fields');
+      if (crons.length && !/\bscheduled\s*(\(|:|=)/.test(rel.toString('utf8'))) bad.push('crons set but the release has no scheduled() handler');
       // Durable Objects (pipeline.json durable_objects): the class each binding names is exported by the release, the
       // migrations wrangler resolves for this env end at pipeline.json's tag, and the binding list for the env is the one
       // pipeline.json names (durable_objects is not inherited by an env, so a staging that forgot it would have none).

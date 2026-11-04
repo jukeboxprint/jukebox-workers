@@ -21,7 +21,8 @@
 //             or missing tag makes `wrangler versions upload` refuse, or a full deploy re-run migrations). Service
 //             bindings are compared like the others (binding + service name).
 //   kind passthrough only (pipeline.json; jbx-claude-cache, jbx-desk-live), the non-versioned settings: no logpush, no tail
-//   consumers, no cron (schedules), workers.dev and previews as the toml (subdomain). Live: refused; staging: noted.
+//   consumers, crons (schedules) as the toml's [triggers] (none set yet: noted, the deploy sets them), workers.dev and
+//   previews as the toml (subdomain). Live: refused; staging: noted.
 //   Observability is dashboard-managed (the toml has none, so `wrangler versions deploy` leaves it alone: run 41325777020
 //   showed its PATCH clearing it); live's is reported as a note only.
 // Reads only (GET). Prints secret names, never values; the API never returns secret values.
@@ -29,7 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { parse } from 'smol-toml';
-import { worker, wantBindings, doBinding, lastMigrationTag } from './worker.mjs';
+import { worker, wantBindings, doBinding, lastMigrationTag, cronsFor, cronPlan } from './worker.mjs';
 
 const { WD, KIND, PIPE } = worker();
 // Fields a release sets on purpose (pipeline.json release_managed; jbx-claude-cache's capture switch, jbx-desk-live's jobs
@@ -147,8 +148,14 @@ try {
     notes.push(`${ENV} observability (dashboard, not changed by a deploy): ${o ? `enabled ${!!o.enabled}, logs ${!!(o.logs && o.logs.enabled)}` : 'unset'}`);
     if (ss.logpush) bindingIssue(`logpush on ${ENV} (not in toml)`);
     if ((ss.tail_consumers || []).length) bindingIssue(`tail consumers on ${ENV} (not in toml)`);
+    // Crons: the Worker's schedules against the toml's [triggers] crons for this env. None set yet while the toml has
+    // some: noted (the deploy sets them, scripts/door/triggers.mjs); any other difference: a binding issue.
     const sch = await api(`/workers/scripts/${NAME}/schedules`);
-    if (((sch || {}).schedules || []).length) bindingIssue(`cron on ${ENV}: ${JSON.stringify(sch.schedules)} (not in toml)`);
+    const haveC = ((sch || {}).schedules || []).map(x => String(x.cron || '').trim()).filter(Boolean), wantC = cronsFor(toml, ENV);
+    if (cronPlan(wantC, haveC) === 'set') {
+      if (!haveC.length) notes.push(`crons on ${ENV} not set yet: the deploy sets ${JSON.stringify(wantC)}`);
+      else bindingIssue(`crons on ${ENV}: ${JSON.stringify(haveC)}, toml ${JSON.stringify(wantC)}`);
+    }
     const sd = await api(`/workers/scripts/${NAME}/subdomain`);
     if (!!sd.enabled !== (want.workers_dev !== false) || !!sd.previews_enabled !== !!want.preview_urls) bindingIssue(`workers.dev ${sd.enabled}, previews ${sd.previews_enabled} on ${ENV}; toml ${want.workers_dev}, ${want.preview_urls}`);
   }
