@@ -1,5 +1,27 @@
 # Changes
 
+## v1.0.7 (2026-11-04)
+
+- Queues, asked for by jukebox-door PR #9 (jbx-bq v2: the BigQuery write path as a Queue consumer; the producer is
+  copilot-jobs). A Worker whose toml has no queues behaves as in v1.0.6: same proof checks, same drift requests and
+  answer, the new deploy steps do nothing (tests prove each against v1.0.6).
+  - Producers (`[[queues.producers]]`, `binding` and `queue` only): a version binding, `queue <binding> <queue>` in
+    `wantBindings`, the upload-form check in `proof.mjs` and live drift. Not inherited by an env (as wrangler).
+  - Consumers (`[[queues.consumers]]`: `queue`, `max_batch_size`, `max_batch_timeout`, `max_retries`, optional
+    `dead_letter_queue`; the first four required, any other key refused). `proof.mjs` checks them and that the release
+    has a `queue()` handler. `scripts/door/queues.mjs` (new) and two steps in `worker-deploy.yml` (after the staging
+    deploy, after the live rollout, next to the crons): read the consumer from the Cloudflare API; equal = nothing;
+    else POST or PUT it with the body wrangler 4.156 sends, read it back, fail unless equal. Skipped when the toml has
+    none. `drift.mjs` compares them before a deploy (not set yet: noted; different: as bindings; pipeline.json
+    `release_managed.queues` lists queues whose settings a release changes).
+  - The pipeline never creates a queue. Every queue the toml names (producers, consumers, dead-letter queues) must exist:
+    drift and `queues.mjs` fail naming it ("create it in the dashboard or with `wrangler queues create <name>`, on
+    Tyler's word"). A queue held by another Worker is refused; staging may not name any of live's queues.
+  - An API answer not in the expected shape fails before anything changes. A consumer the toml drops is not removed
+    (`wrangler queues consumer remove`, by hand). Consumers are not versioned: a rollback of the script keeps them.
+  - Helpers in `scripts/door/worker.mjs`. Tests: `tests/scripts/queues.test.mjs`, `drift.test.mjs`, `proof.test.mjs`
+    (real wrangler dry-run), `worker.test.mjs`. Packages unchanged.
+
 ## v1.0.6 (2026-11-04)
 
 - `scripts/door/rollout.mjs`: the gradual rollout's watch also compares refusals (HTTP 302 and 403) between the new and

@@ -23,6 +23,9 @@
 //   kind passthrough only (pipeline.json; jbx-claude-cache, jbx-desk-live), the non-versioned settings: no logpush, no tail
 //   consumers, crons (schedules) as the toml's [triggers] (none set yet: noted, the deploy sets them), workers.dev and
 //   previews as the toml (subdomain). Live: refused; staging: noted.
+//   queues (v1.0.7, only when the toml names any for the env): producer bindings compared like the others; every queue
+//             named must exist (missing: refused, "create it ... on Tyler's word"); consumers compared with the toml
+//             (not set yet: noted; held by another Worker: refused; different: as bindings).
 //   Observability is dashboard-managed (the toml has none, so `wrangler versions deploy` leaves it alone: run 41325777020
 //   showed its PATCH clearing it); live's is reported as a note only.
 // Reads only (GET). Prints secret names, never values; the API never returns secret values.
@@ -30,14 +33,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { parse } from 'smol-toml';
-import { worker, wantBindings, doBinding, lastMigrationTag, cronsFor, cronPlan } from './worker.mjs';
+import { worker, wantBindings, doBinding, lastMigrationTag, cronsFor, cronPlan, queueNamesFor, queueConfigProblems, consumersFor,
+  findQueue, consumerState, consumerDiff, QUEUE_MISSING } from './worker.mjs';
 
 const { WD, KIND, PIPE } = worker();
 // Fields a release sets on purpose (pipeline.json release_managed; jbx-claude-cache's capture switch, jbx-desk-live's jobs
 // forward): a difference between live and the toml there is what the deploy is for, so it is noted, not refused.
 // vars: plain-var names; services: service-binding names (the front door: SUGGEST, until v40 is live).
-// kv: KV binding names (copilot-suggest v2 binds OUTBOX_KV over a live v1 that has none).
-const MANAGED = Object.assign({ vars: [], services: [], kv: [] }, PIPE.release_managed || {});
+// kv: KV binding names (copilot-suggest v2 binds OUTBOX_KV over a live v1 that has none). queues (v1.0.7): consumer
+// queue names whose settings the release changes.
+const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [] }, PIPE.release_managed || {});
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
 const ENV = arg('--env') || 'live';
 const KNOWN = new Set([arg('--prev-sha'), ...(arg('--known-shas') ? fs.readFileSync(arg('--known-shas'), 'utf8').split(/\s+/) : [])]
@@ -124,6 +129,7 @@ try {
     else if (b.type === 'durable_object_namespace') have.push(doBinding(b.name, b.class_name, b.script_name, NAME));
     else if (b.type === 'service') have.push(`service ${b.name} ${b.service}`);
     else if (b.type === 'hyperdrive') have.push(`hyperdrive ${b.name} ${b.id}`);
+    else if (b.type === 'queue') have.push(`queue ${b.name} ${b.queue_name}`);
     else have.push(`${b.type} ${b.name} (not handled by the pipeline)`);
   }
   // Live: any difference stops the deploy (the upload would change live's bindings). Staging: the upload sets them, so a
@@ -139,6 +145,22 @@ try {
   for (const n of secrets) if (!wantSecrets.includes(n)) problems.push(`secret on ${ENV} not in secrets.json: ${n}`);
 
   if (PIPE.durable_objects) await durableObjects(s.bindings || []);
+  // Queues (v1.0.7), only when the toml names any for this env (otherwise nothing is read: as before). Every queue it
+  // names must exist (the pipeline never creates one); a consumer held by another Worker is refused; this Worker's
+  // consumer not set yet is noted (queues.mjs sets it after the deploy); different settings are a binding issue
+  // (live refused, staging noted) unless pipeline.json release_managed.queues names that queue.
+  if (queueNamesFor(toml, ENV).length) {
+    problems.push(...queueConfigProblems(toml, ENV));
+    const found = {};
+    for (const n of queueNamesFor(toml, ENV)) { found[n] = await findQueue(api, n); if (!found[n]) problems.push(QUEUE_MISSING(n)); }
+    for (const w of consumersFor(toml, ENV)) {
+      if (!found[w.queue]) continue;
+      const { mine } = consumerState(found[w.queue], NAME, found[w.dead_letter_queue] || null);
+      const d = consumerDiff(w, mine);
+      if (!mine) notes.push(`queue consumer for ${w.queue} on ${ENV} not set yet: the deploy sets it`);
+      else if (d.length) ((MANAGED.queues || []).includes(w.queue) ? notes.push(`release sets queue consumer ${w.queue}: ${d.join(', ')}`) : bindingIssue(`queue consumer ${w.queue} on ${ENV}: ${d.join(', ')}`));
+    }
+  }
 
   if (KIND === 'passthrough') {
     const ss = await api(`/workers/scripts/${NAME}/script-settings`);

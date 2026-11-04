@@ -97,6 +97,12 @@ jobs:
   302/403 above 2× the old one's and at least 0.05 higher (`rollout.max_refusal_share_vs_old`,
   `rollout.min_refusal_excess`; `rollout.refusals: false` turns it off). A refusal read that fails is logged
   (`refusals_unreadable`) and skipped, never a rollback.
+- **Queues (v1.0.7):** `[[queues.producers]]` are bindings (proof, drift). `[[queues.consumers]]` are set after each
+  deploy by `scripts/door/queues.mjs` (a version deploy never sets them), then read back; skipped when the toml has
+  none. Each env declares its own (not inherited), and staging uses its own queues. The pipeline never creates a queue:
+  a queue (or dead-letter queue) that does not exist fails drift and the deploy, named. Tyler creates it first, in the
+  dashboard or with `wrangler queues create <name>`. A consumer the toml drops is removed by hand. A rollback keeps the
+  consumers.
 - **Rollback by hand:** `wrangler rollback`, then the smoke list.
 - **D1:** creates any database the tomls name and prints ids; the ids go into the toml by PR.
 

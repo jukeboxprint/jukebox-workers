@@ -14,7 +14,9 @@
 //      after the upload (observability, logpush, tail consumers), as wrangler itself reads them from the toml: no
 //      observability (dashboard-managed: run 41325777020 showed a PATCH from the toml clearing live's), no logpush, no
 //      tail consumers; plus workers_dev on, preview_urls as pipeline.json and no placement / limits; crons ([triggers])
-//      each valid, with a scheduled() handler in the release. The front
+//      each valid, with a scheduled() handler in the release. Queues (v1.0.7, any kind, only when the toml has any):
+//      producer bindings are in the form like the others (`queue <binding> <queue>`); consumers set only the keys
+//      queues.mjs handles, with a queue() handler in the release; staging uses none of live's queues. The front
 //      door's toml sets none of these, so its upload form check ("no observability") is unchanged.
 // Prints one JSON line; exit 1 on any failure.
 import fs from 'node:fs';
@@ -24,7 +26,8 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { ROOT, HERE, worker, envConfig, wantBindings as bindingsFor, doBinding, lastMigrationTag, cronsFor, validCron } from './worker.mjs';
+import { ROOT, HERE, worker, envConfig, wantBindings as bindingsFor, doBinding, lastMigrationTag, cronsFor, validCron,
+  queuesFor, consumersFor, queueConfigProblems } from './worker.mjs';
 
 const { WORKER, WD, PIPE: CFG, KIND } = worker();
 const REL = JSON.parse(fs.readFileSync(path.join(WD, 'release.json'), 'utf8'));
@@ -110,7 +113,8 @@ for (const env of ['live', 'staging']) {
     const got = (meta.bindings || []).map(b => b.type === 'kv_namespace' ? `kv_namespace ${b.name} ${b.namespace_id}`
       : b.type === 'd1' ? `d1 ${b.name} ${b.id || b.database_id}` : b.type === 'plain_text' ? `plain_text ${b.name} ${b.text}`
       : b.type === 'durable_object_namespace' ? doBinding(b.name, b.class_name, b.script_name, want.name)
-      : b.type === 'service' ? `service ${b.name} ${b.service}` : b.type === 'hyperdrive' ? `hyperdrive ${b.name} ${b.id}` : `${b.type} ${b.name}`).sort();
+      : b.type === 'service' ? `service ${b.name} ${b.service}` : b.type === 'hyperdrive' ? `hyperdrive ${b.name} ${b.id}`
+      : b.type === 'queue' && b.delivery_delay == null ? `queue ${b.name} ${b.queue_name}` : `${b.type} ${b.name}`).sort();
     if (JSON.stringify(got) !== JSON.stringify(wantBindings(env))) throw new Error('form bindings ' + JSON.stringify(got));
     out.checks['upload_' + env] = 'ok';
   } catch (e) { fail('upload_' + env, String(e.stderr || e.message || e).split('\n').filter(Boolean).slice(-1)[0]); }
@@ -157,6 +161,26 @@ if (KIND === 'passthrough') {
       out.checks['settings_' + env] = 'ok';
     } catch (e) { fail('settings_' + env, String(e.message || e).split('\n')[0]); }
   }
+}
+
+// 6. queues (v1.0.7), only for an env whose toml has any (so a Worker without queues proves exactly as before):
+// producers and consumers use only keys the pipeline handles, consumers set batch size, timeout and retries, staging
+// names none of live's queues, wrangler reads the same queues from the toml as the scripts do (not inherited by an env),
+// and a release with consumers has a queue() handler.
+for (const env of ['live', 'staging']) {
+  const q = queuesFor(toml, env);
+  if (!Object.keys(q).length) continue;
+  try {
+    const bad = queueConfigProblems(toml, env);
+    const { unstable_readConfig } = await import('wrangler');
+    const c = (unstable_readConfig({ config: path.join(WD, 'wrangler.toml'), env: env === 'live' ? undefined : env }).queues) || {};
+    const theirs = JSON.stringify([(c.producers || []).map(p => `${p.binding} ${p.queue}`).sort(), (c.consumers || []).map(x => x.queue).sort()]);
+    const ours = JSON.stringify([(q.producers || []).map(p => `${p.binding} ${p.queue}`).sort(), consumersFor(toml, env).map(x => x.queue)]);
+    if (theirs !== ours) bad.push(`wrangler reads queues ${theirs}, the pipeline ${ours}`);
+    if ((q.consumers || []).length && !/\bqueue\s*(\(|:|=)/.test(rel.toString('utf8'))) bad.push('queue consumers set but the release has no queue() handler');
+    if (bad.length) throw new Error(bad.join('; '));
+    out.checks['queues_' + env] = 'ok';
+  } catch (e) { fail('queues_' + env, String(e.message || e).split('\n')[0]); }
 }
 
 // 5. migrations (pipeline.json durable_objects): a REAL `wrangler versions upload` (not --dry-run, which never looks at

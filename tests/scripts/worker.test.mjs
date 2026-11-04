@@ -128,3 +128,43 @@ test('judgeRefusals: a big absolute rise under 2x the old share passes; off pass
   assert.equal(judgeRefusals(share(1000, 300), share(9000, 1800), S), null);
   assert.equal(judgeRefusals(share(1000, 900), share(9000, 0), refusalSettings({ refusals: false })), null);
 });
+
+// Queues (v1.0.7): producers are bindings, never inherited by an env; consumers in the API's terms.
+import { queuesFor, consumersFor, queueNamesFor, queueConfigProblems, consumerState, consumerDiff } from '../../scripts/door/worker.mjs';
+const qt = {
+  name: 'jbx-q', vars: { A: '1' },
+  queues: { producers: [{ binding: 'BQ_DLQ', queue: 'rows-dlq' }],
+    consumers: [{ queue: 'rows', max_batch_size: 100, max_batch_timeout: 5, max_retries: 8, dead_letter_queue: 'rows-dlq' }] },
+  env: { staging: { name: 'jbx-q-staging', vars: { A: '1' } } },
+};
+test('wantBindings: a toml without queues gives exactly what v1.0.6 gave', () => {
+  assert.deepEqual(wantBindings(toml, 'live'), ['hyperdrive MYSQL ' + 'h'.repeat(32), 'kv_namespace KV k1', 'plain_text A 1']);
+  assert.deepEqual(wantBindings(toml, 'staging'), ['kv_namespace KV k2', 'plain_text A 1']);
+});
+test('queues: producers are bindings on live; an env without its own has none (not inherited)', () => {
+  assert.deepEqual(wantBindings(qt, 'live'), ['plain_text A 1', 'queue BQ_DLQ rows-dlq']);
+  assert.deepEqual(wantBindings(qt, 'staging'), ['plain_text A 1']);
+  assert.deepEqual(queuesFor(qt, 'staging'), {}); assert.deepEqual(consumersFor(qt, 'staging'), []); assert.deepEqual(queueNamesFor(qt, 'staging'), []);
+});
+test('queues: consumers in the API\'s terms (timeout in ms); names include dead-letter queues', () => {
+  assert.deepEqual(consumersFor(qt, 'live'), [{ queue: 'rows', dead_letter_queue: 'rows-dlq', batch_size: 100, max_retries: 8, max_wait_time_ms: 5000 }]);
+  assert.deepEqual(queueNamesFor(qt, 'live'), ['rows', 'rows-dlq']);
+  assert.deepEqual(queueConfigProblems(qt, 'live'), []);
+});
+test('queueConfigProblems: unhandled keys, missing settings, own dead-letter queue, a queue twice', () => {
+  const t = structuredClone(qt);
+  t.queues.consumers.push({ queue: 'rows', max_batch_size: 1, max_retries: 1, dead_letter_queue: 'rows', retry_delay: 3 });
+  t.queues.producers[0].delivery_delay = 5;
+  const p = queueConfigProblems(t, 'live').join('; ');
+  for (const re of [/delivery_delay is not handled/, /retry_delay is not handled/, /consumed twice/, /max_batch_timeout must be set/, /dead_letter_queue "rows"/]) assert.match(p, re);
+});
+test('consumerState / consumerDiff: mine, none, another Worker refused', () => {
+  const q = c => ({ queue_id: 'q1', queue_name: 'rows', consumers: c });
+  const want = consumersFor(qt, 'live')[0];
+  assert.deepEqual(consumerState(q([]), 'jbx-q'), { mine: null });
+  assert.deepEqual(consumerDiff(want, null), ['not set']);
+  const s = consumerState(q([{ consumer_id: 'c1', type: 'worker', script: 'jbx-q', dead_letter_queue: 'rows-dlq', settings: { batch_size: 100, max_retries: 8, max_wait_time_ms: 5000 } }]), 'jbx-q');
+  assert.equal(s.consumer_id, 'c1'); assert.deepEqual(consumerDiff(want, s.mine), []);
+  assert.throws(() => consumerState(q([{ consumer_id: 'c2', type: 'worker', script: 'jbx-other', settings: {} }]), 'jbx-q'), /consumed by jbx-other/);
+  assert.throws(() => consumerState(q([{ consumer_id: 'c3', type: 'http_pull', settings: {} }]), 'jbx-q'), /consumed by http_pull/);
+});

@@ -41,6 +41,8 @@ export function wantBindings(toml, env) {
   // Hyperdrive (jukebox-workers v1.0.0): never inherited by an env (wrangler), so an env without its own has none; staging
   // normally has none (no live data). An id of TBD blocks every deploy, as for KV and D1.
   for (const h of (env === 'live' ? toml.hyperdrive : ((toml.env || {})[env] || {}).hyperdrive) || []) e.push(`hyperdrive ${h.binding} ${h.id}`);
+  // Queue producers (v1.0.7): never inherited by an env (wrangler: queues is not inheritable), like Hyperdrive.
+  for (const q of queuesFor(toml, env).producers || []) e.push(`queue ${q.binding} ${q.queue}`);
   return e.sort();
 }
 // One Durable Object binding in drift's form; a script_name naming the Worker itself is the same as none.
@@ -179,3 +181,80 @@ export function judgeRefusals(nw, old, s) {
   }
   return null;
 }
+
+// Queues (v1.0.7; jbx-bq's write path, jukebox-door PR #9). [[queues.producers]] are version bindings (wantBindings,
+// proof, drift). [[queues.consumers]] are not: `wrangler versions upload` / `versions deploy` never set them, so
+// scripts/door/queues.mjs sets and checks them after a deploy. Neither is inherited by an env (wrangler 4.156: queues
+// is notInheritable). The pipeline never creates a queue: a missing one fails with QUEUE_MISSING's message.
+export const queuesFor = (toml, env) => (env === 'live' ? toml.queues : (((toml.env || {})[env] || {}).queues)) || {};
+export const QUEUE_MISSING = n => `queue ${n} does not exist: create it in the dashboard or with \`wrangler queues create ${n}\`, on Tyler's word (the pipeline never creates queues)`;
+const PRODUCER_KEYS = ['binding', 'queue'];
+const CONSUMER_KEYS = ['queue', 'max_batch_size', 'max_batch_timeout', 'max_retries', 'dead_letter_queue'];
+const QNAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// The consumers the toml sets for env, in the Cloudflare API's terms (wrangler's own request body: max_batch_timeout
+// seconds -> settings.max_wait_time_ms). Sorted by queue.
+export const consumersFor = (toml, env) => (queuesFor(toml, env).consumers || []).map(c => ({ queue: c.queue,
+  dead_letter_queue: c.dead_letter_queue || '', batch_size: c.max_batch_size, max_retries: c.max_retries,
+  max_wait_time_ms: typeof c.max_batch_timeout === 'number' ? c.max_batch_timeout * 1000 : c.max_batch_timeout }))
+  .sort((a, b) => a.queue < b.queue ? -1 : a.queue > b.queue ? 1 : 0);
+// Every queue the toml names for env (producers, consumers, dead-letter queues). [] = the Worker has no queues.
+export const queueNamesFor = (toml, env) => {
+  const q = queuesFor(toml, env);
+  return [...new Set([...(q.producers || []).map(p => p.queue), ...(q.consumers || []).flatMap(c => [c.queue, c.dead_letter_queue])]
+    .filter(x => x !== undefined && x !== null && x !== ''))].sort();
+};
+// What the pipeline refuses in a toml's queues for env (proof and drift): keys it does not handle, missing or bad
+// values, a queue consumed twice or its own dead-letter queue, and (staging) any queue live names.
+export function queueConfigProblems(toml, env) {
+  const q = queuesFor(toml, env), bad = [];
+  for (const k of Object.keys(q)) if (!['producers', 'consumers'].includes(k)) bad.push(`queues.${k} is not handled by the pipeline`);
+  for (const p of q.producers || []) {
+    for (const k of Object.keys(p)) if (!PRODUCER_KEYS.includes(k)) bad.push(`queue producer ${p.binding}: ${k} is not handled by the pipeline`);
+    if (!/^[A-Z][A-Z0-9_]*$/.test(String(p.binding))) bad.push(`queue producer binding ${JSON.stringify(p.binding)}`);
+    if (!QNAME.test(String(p.queue))) bad.push(`queue producer ${p.binding}: queue ${JSON.stringify(p.queue)}`);
+  }
+  const seen = new Set();
+  for (const c of q.consumers || []) {
+    for (const k of Object.keys(c)) if (!CONSUMER_KEYS.includes(k)) bad.push(`queue consumer ${c.queue}: ${k} is not handled by the pipeline`);
+    if (!QNAME.test(String(c.queue))) bad.push(`queue consumer queue ${JSON.stringify(c.queue)}`);
+    if (seen.has(c.queue)) bad.push(`queue ${c.queue} consumed twice`);
+    seen.add(c.queue);
+    for (const k of ['max_batch_size', 'max_batch_timeout', 'max_retries']) if (!Number.isInteger(c[k]) || c[k] < 0) bad.push(`queue consumer ${c.queue}: ${k} must be set (a whole number)`);
+    if (c.dead_letter_queue !== undefined && (!QNAME.test(String(c.dead_letter_queue)) || c.dead_letter_queue === c.queue)) bad.push(`queue consumer ${c.queue}: dead_letter_queue ${JSON.stringify(c.dead_letter_queue)}`);
+  }
+  if (env !== 'live') for (const n of queueNamesFor(toml, env)) if (queueNamesFor(toml, 'live').includes(n)) bad.push(`${env} names live's queue ${n} (staging holds no live data)`);
+  return bad;
+}
+// One queue by name from GET /accounts/<a>/queues?name=<n> (api(path) returns the result; wrangler 4.156's getQueue
+// reads the same list). null = no such queue. Throws on any answer not in the expected shape, before anything changes.
+export async function findQueue(api, name) {
+  const r = await api(`/queues?page=1&name=${encodeURIComponent(name)}`);
+  if (!Array.isArray(r)) throw new Error(`GET /queues?name=${name}: not a list (unexpected shape)`);
+  const m = r.filter(q => q && q.queue_name === name);
+  if (m.length > 1) throw new Error(`GET /queues?name=${name}: ${m.length} queues with that name (unexpected)`);
+  if (!m.length) return null;
+  if (typeof m[0].queue_id !== 'string' || !m[0].queue_id || !Array.isArray(m[0].consumers)) throw new Error(`queue ${name}: no queue_id or consumers list (unexpected shape)`);
+  return m[0];
+}
+// This Worker's consumer on queue q, in consumersFor()'s form: { mine, consumer_id } (mine null = none yet). dlq: the
+// dead-letter queue's own record (findQueue), to tell a name from an id. Throws when another Worker or an HTTP pull
+// consumer holds the queue, or the consumer's answer is not in the expected shape.
+export function consumerState(q, self, dlq) {
+  const others = q.consumers.filter(c => !(c && c.type === 'worker' && (c.script === self || c.service === self)));
+  if (others.length) throw new Error(`queue ${q.queue_name} is consumed by ${others.map(c => (c && (c.script || c.service || c.type)) || '?').join(', ')}, not ${self}: refused`);
+  if (q.consumers.length > 1) throw new Error(`queue ${q.queue_name} has ${q.consumers.length} consumers for ${self} (unexpected)`);
+  if (!q.consumers.length) return { mine: null };
+  const c = q.consumers[0], s = c.settings;
+  if (typeof c.consumer_id !== 'string' || !c.consumer_id || !s || typeof s !== 'object'
+    || !['batch_size', 'max_retries', 'max_wait_time_ms'].every(k => s[k] === undefined || typeof s[k] === 'number')
+    || (c.dead_letter_queue != null && typeof c.dead_letter_queue !== 'string')) throw new Error(`queue ${q.queue_name}: consumer ${JSON.stringify(c).slice(0, 200)} (unexpected shape)`);
+  if (dlq && c.dead_letter_queue && c.dead_letter_queue === dlq.queue_id && dlq.queue_id !== dlq.queue_name) throw new Error(`queue ${q.queue_name}: dead_letter_queue reads as an id, not a name (unexpected shape)`);
+  return { consumer_id: c.consumer_id, mine: { queue: q.queue_name, dead_letter_queue: c.dead_letter_queue || '', batch_size: s.batch_size,
+    max_retries: s.max_retries, max_wait_time_ms: s.max_wait_time_ms } };
+}
+// Differences between a wanted consumer and the one Cloudflare has (null = none). [] when equal.
+export const consumerDiff = (want, have) => !have ? ['not set']
+  : ['dead_letter_queue', 'batch_size', 'max_retries', 'max_wait_time_ms'].filter(k => want[k] !== have[k]).map(k => `${k} ${JSON.stringify(have[k])}, toml ${JSON.stringify(want[k])}`);
+// The request body wrangler 4.156 sends to POST /queues/<id>/consumers and PUT .../consumers/<consumer_id>.
+export const consumerBody = (want, self) => ({ type: 'worker', dead_letter_queue: want.dead_letter_queue || undefined, script_name: self,
+  settings: { batch_size: want.batch_size, max_retries: want.max_retries, max_wait_time_ms: want.max_wait_time_ms } });
