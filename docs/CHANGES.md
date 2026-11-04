@@ -1,5 +1,13 @@
 # Changes
 
+## v1.0.5 (2026-11-04)
+
+- `worker-ci.yml`: new optional input `npm_script` (default `test`, so nothing changes for today's callers). Worker CI's
+  last step runs that npm script if package.json has it; `''` runs none. A script name must be 1-64 of
+  `A-Za-z0-9:_.-`, passed through `env`, never interpolated into the shell. For a repo whose root `npm test` is not the
+  Workers' (for example an older repo that gains a `workers/` folder): `with: { npm_script: test:workers }`. Asked
+  for while placing jbx-prepress-watch (the analytics session, 4 Nov 2026). Scripts and packages unchanged.
+
 ## v1.0.4 (2026-11-04)
 
 - Cron triggers (`[triggers] crons` in a Worker's wrangler.toml), asked for by the accounting session so jbx-accounting's

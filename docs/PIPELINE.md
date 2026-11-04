@@ -88,7 +88,8 @@ jobs:
 ## What a run does
 
 - **CI (every PR):** pins, same wrangler as the pipeline, the pattern check, then for each Worker: proof, typecheck
-  (if `workers/<dir>/tsconfig.json`), `workers/<dir>/scripts/check.mjs`, `tests/<dir>/*_test.mjs`; then `npm test`.
+  (if `workers/<dir>/tsconfig.json`), `workers/<dir>/scripts/check.mjs`, `tests/<dir>/*_test.mjs`; then the caller's npm script: input `npm_script`, default `test`, `''` = none (v1.0.5), run only if
+  package.json has it.
 - **Deploy on merge:** each changed Worker whose `<DIR>_STAGING` is on: drift → D1 migrations → upload at 100% → smoke.
 - **Deploy by hand with Go live** (one Worker, `<DIR>_LIVE` on, on Tyler's word): staging as above, then live drift →
   D1 migrations → rollout per `pipeline.json` → drift again; any failure or cancel puts the old version back.
