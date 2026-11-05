@@ -97,6 +97,22 @@ jobs:
   302/403 above 2× the old one's and at least 0.05 higher (`rollout.max_refusal_share_vs_old`,
   `rollout.min_refusal_excess`; `rollout.refusals: false` turns it off). A refusal read that fails is logged
   (`refusals_unreadable`) and skipped, never a rollback.
+- **Low traffic and dark releases (v1.0.9, Tyler 5 Nov 2026):** too little traffic never rolls back. Past
+  `rollout.max_watch_minutes` the step holds (`holding_low_traffic`) and keeps polling up to `rollout.max_wait_minutes`
+  (default 120, from the step's start; at least `max_watch_minutes`, at most 300); while held, an error-rate breach on
+  any traffic still rolls back. Still too little: `held_low_traffic`, **exit 4**, the split left as it is (no rollback, no
+  promote). The job fails as "Held at N%, no rollback" and the restore step does not run. A person decides: the Rollback
+  workflow (or the dashboard) to go back; a new Go live needs one version at 100% first. The job timeout grows to
+  cover the wait (steps × the larger of the two, plus margin).
+  A release whose new code is all behind switches that are off may say so in `pipeline.json`:
+  `"rollout": { "dark": { "release": "<release.json version>", "switches": [ { "kind": "d1", "binding": "DB", "key":
+  "<config key>", "table": "config", "off": ["off"] }, { "kind": "kv", "binding": "SNAP", "key": "<kv key>", "off":
+  ["false"] } ] } }`. A switch is off when its live value is missing or exactly one of `off`. CI (proof) refuses a
+  declaration for another release, with no switches, with a binding not in the live toml, or without a smoke list:
+  remove it in the next release. At Go live, rollout reads every switch on live with the deploy token (D1: `SELECT
+  value FROM <table> WHERE key = ?`; KV: the key's value). All off (`dark`): each step waits `watch_minutes` and rolls
+  back only on an error-rate breach on any traffic; the smoke list runs at 100%. Any switch on, any read that fails or
+  answers in an unexpected shape: `dark_refused` with the reason, and the normal watch.
 - **Queues (v1.0.7):** `[[queues.producers]]` are bindings (proof, drift). `[[queues.consumers]]` are set after each
   deploy by `scripts/door/queues.mjs` (a version deploy never sets them), then read back; skipped when the toml has
   none. Each env declares its own (not inherited), and staging uses its own queues. The pipeline never creates a queue:

@@ -94,7 +94,7 @@ jobs:
             echo "live_on=$(jq -r --arg k "${sw}_LIVE" 'if .[$k] == "on" then "true" else "false" end' <<<"$VARS")" >> "$GITHUB_OUTPUT"
             echo "staging_on=$(jq -r --arg k "${sw}_STAGING" 'if .[$k] == "on" then "true" else "false" end' <<<"$VARS")" >> "$GITHUB_OUTPUT"
             echo "version=$(jq -r .version "workers/$one/release.json")" >> "$GITHUB_OUTPUT"
-            echo "live_timeout=$(jq '.rollout as $r | ([$r.steps_pct[] | select(. < 100)] | length) * $r.max_watch_minutes + $r.job_margin_minutes + 15' "workers/$one/pipeline.json")" >> "$GITHUB_OUTPUT"
+            echo "live_timeout=$(jq '.rollout as $r | ([$r.steps_pct[] | select(. < 100)] | length) * ([$r.max_watch_minutes, ($r.max_wait_minutes // 120)] | max) + $r.job_margin_minutes + 15' "workers/$one/pipeline.json")" >> "$GITHUB_OUTPUT"
           else
             echo "live_timeout=30" >> "$GITHUB_OUTPUT"
           fi
@@ -227,8 +227,21 @@ jobs:
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: node "$P/scripts/worker/d1.mjs" --worker "$W" --migrate --env live
       - name: Rollout (pipeline.json rollout), automatic rollback on a breach
+        id: rollout
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
-        run: node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --message "$W $VERSION $SHA" --tag "$SHA" | tee rollout.ndjson
+        # Exit 4 = held_low_traffic (v1.0.9): too little traffic by rollout.max_wait_minutes. The split is left as it is;
+        # this step fails, and the restore step below does not run for it.
+        run: |
+          set +e
+          node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --message "$W $VERSION $SHA" --tag "$SHA" | tee rollout.ndjson
+          code="${PIPESTATUS[0]}"
+          set -e
+          if [ "$code" = 4 ]; then
+            pct="$(jq -r 'select(.step == "held_low_traffic") | .pct' rollout.ndjson | head -1)"
+            echo "held=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Held at ${pct}%, no rollback::Too little traffic to judge by rollout.max_wait_minutes. The split is left at ${pct}%: no rollback, no promote. A person decides (Rollback workflow, or the dashboard)."
+          fi
+          exit "$code"
       - name: Crons on live (the toml's [triggers]; a version deploy does not set them)
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: node "$P/scripts/door/triggers.mjs" --worker "$W" --env live | tee crons.json
@@ -243,9 +256,10 @@ jobs:
           node "$P/scripts/door/drift.mjs" --worker "$W" --env live | tee drift-after.json
           jq -e '.deployed.is == "release"' drift-after.json
       - name: "If failed or cancelled mid-rollout, put the old version back at 100%"
-        if: ${{ failure() || cancelled() }}
+        if: ${{ (failure() || cancelled()) && steps.rollout.outputs.held != 'true' }}
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
+          if jq -e 'select(.step == "held_low_traffic")' rollout.ndjson >/dev/null 2>&1; then echo "held at low traffic: the split is left as it is"; exit 0; fi
           old="$(jq -r 'select(.step == "current") | .version' rollout.ndjson 2>/dev/null | head -1)"
           if [ -z "$old" ]; then echo "rollout never started: nothing to restore"; exit 0; fi
           node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --restore "$old"

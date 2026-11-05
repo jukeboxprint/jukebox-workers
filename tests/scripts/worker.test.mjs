@@ -168,3 +168,33 @@ test('consumerState / consumerDiff: mine, none, another Worker refused', () => {
   assert.throws(() => consumerState(q([{ consumer_id: 'c2', type: 'worker', script: 'jbx-other', settings: {} }]), 'jbx-q'), /consumed by jbx-other/);
   assert.throws(() => consumerState(q([{ consumer_id: 'c3', type: 'http_pull', settings: {} }]), 'jbx-q'), /consumed by http_pull/);
 });
+
+// Go live rules (v1.0.9): rollout.max_wait_minutes and rollout.dark, as proof.mjs (CI) and rollout.mjs check them.
+import { maxWait, waitProblems, darkProblems, HELD_EXIT } from '../../scripts/door/worker.mjs';
+const DTOML = { d1_databases: [{ binding: 'DB', database_id: 'db1' }], kv_namespaces: [{ binding: 'SNAP', id: 'TBD' }] };
+const DPIPE = { smoke: [{ name: 's', path: '/' }] };
+const DOK = { release: 'v7', switches: [{ kind: 'd1', binding: 'DB', key: 'price_actions', off: ['off', 'dry'] }] };
+test('maxWait: missing = 120; waitProblems: at least max_watch_minutes, at most 300, a number', () => {
+  assert.equal(maxWait({}), 120); assert.equal(HELD_EXIT, 4);
+  assert.deepEqual(waitProblems({ max_watch_minutes: 30 }), []);
+  assert.deepEqual(waitProblems({ max_watch_minutes: 30, max_wait_minutes: 30 }), []);
+  for (const v of [29, 301, '60', null]) assert.equal(waitProblems({ max_watch_minutes: 30, max_wait_minutes: v }).length, 1, String(v));
+});
+test('darkProblems: a good declaration passes', () => assert.deepEqual(darkProblems(DOK, 'v7', DPIPE, DTOML), []));
+test('darkProblems: another release, no switches, no smoke list: each refused', () => {
+  assert.match(darkProblems(DOK, 'v8', DPIPE, DTOML).join(), /rollout\.dark\.release "v7" is not this release "v8"/);
+  assert.match(darkProblems({ release: 'v7', switches: [] }, 'v7', DPIPE, DTOML).join(), /lists no switches/);
+  assert.match(darkProblems({ release: 'v7' }, 'v7', DPIPE, DTOML).join(), /lists no switches/);
+  assert.match(darkProblems(DOK, 'v7', {}, DTOML).join(), /needs pipeline\.json smoke/);
+});
+test('darkProblems: bad switches refused (kind, key, off, table, unknown keys, binding not live or TBD)', () => {
+  const one = s => darkProblems({ release: 'v7', switches: [s] }, 'v7', DPIPE, DTOML).join('; ');
+  assert.match(one({ kind: 'env', binding: 'DB', key: 'k', off: [] }), /kind "env"/);
+  assert.match(one({ kind: 'd1', binding: 'DB', key: '', off: [] }), /key must be a string/);
+  assert.match(one({ kind: 'd1', binding: 'DB', key: 'k', off: [false] }), /off must be a list of strings/);
+  assert.match(one({ kind: 'd1', binding: 'DB', key: 'k', table: 'config; drop', off: [] }), /table/);
+  assert.match(one({ kind: 'd1', binding: 'DB', key: 'k', off: [], on: ['x'] }), /\.on is not handled/);
+  assert.match(one({ kind: 'd1', binding: 'NOPE', key: 'k', off: [] }), /binding "NOPE": not a live d1 binding/);
+  assert.match(one({ kind: 'kv', binding: 'SNAP', key: 'k', off: [] }), /binding "SNAP": not a live kv binding/);
+  assert.match(one({ kind: 'kv', binding: 'DB', key: 'k', table: 'config', off: [] }), /\.table is not handled/);
+});

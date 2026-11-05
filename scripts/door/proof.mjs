@@ -18,6 +18,8 @@
 //      producer bindings are in the form like the others (`queue <binding> <queue>`); consumers set only the keys
 //      queues.mjs handles, with a queue() handler in the release; staging uses none of live's queues. The front
 //      door's toml sets none of these, so its upload form check ("no observability") is unchanged.
+//   5. rollout (v1.0.9, when pipeline.json has rollout): max_wait_minutes in range; a rollout.dark declaration must name
+//      this release (release.json version, so it cannot carry over), list its switches and have a smoke list.
 // Prints one JSON line; exit 1 on any failure.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,7 +29,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
 import { ROOT, HERE, worker, envConfig, wantBindings as bindingsFor, doBinding, lastMigrationTag, cronsFor, validCron,
-  queuesFor, consumersFor, queueConfigProblems } from './worker.mjs';
+  queuesFor, consumersFor, queueConfigProblems, waitProblems, darkProblems } from './worker.mjs';
 
 const { WORKER, WD, PIPE: CFG, KIND } = worker();
 const REL = JSON.parse(fs.readFileSync(path.join(WD, 'release.json'), 'utf8'));
@@ -232,6 +234,13 @@ if (CFG.durable_objects) {
       out.checks['migrations_' + env] = 'ok';
     } catch (e) { fail('migrations_' + env, String(e.message || e).split('\n')[0]); }
   }
+}
+
+// 5. rollout settings (v1.0.9): max_wait_minutes, and a rollout.dark declaration (it must name this release, list its
+// switches, each a live D1 or KV binding in the toml, and the Worker must have a smoke list).
+if (CFG.rollout) {
+  const bad = [...waitProblems(CFG.rollout), ...(CFG.rollout.dark === undefined ? [] : darkProblems(CFG.rollout.dark, REL.version, CFG, toml))];
+  if (bad.length) fail('rollout', bad.join('; ')); else out.checks.rollout = CFG.rollout.dark ? 'ok (dark)' : 'ok';
 }
 
 // 3. size

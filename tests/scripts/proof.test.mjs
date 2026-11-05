@@ -66,4 +66,24 @@ test('consumers without a queue() handler, a key the pipeline does not handle, s
   const r = proof();
   assert.equal(r.code, 1); assert.match(r.j.checks.queues_staging, /names live's queue rows-dlq/);
 });
+// v1.0.9: rollout.dark is refused by CI unless it names this release (so it cannot carry over) and lists switches.
+test('rollout.dark: this release with switches passes; another release, or no switches, is refused', () => {
+  const P0 = fs.readFileSync(path.join(WD, 'pipeline.json'), 'utf8');
+  const withDark = dark => fs.writeFileSync(path.join(WD, 'pipeline.json'), JSON.stringify(Object.assign(JSON.parse(P0), {
+    smoke: [{ name: 's', path: '/', expect_status: 200 }], rollout: { max_watch_minutes: 30, dark } })));
+  const D1 = '[[d1_databases]]\nbinding = "DB"\ndatabase_name = "jbx-x"\ndatabase_id = "d1-test-01"\n\n';
+  const sw = [{ kind: 'd1', binding: 'DB', key: 'feature_x', off: ['off'] }];
+  try {
+    setup(BASE + D1 + STAGING + D1.replace('[[d1', '[[env.staging.d1').replace('jbx-x', 'jbx-x-staging').replace('01"', '02"'), NO_QUEUE);
+    withDark({ release: 'v1', switches: sw });
+    let r = proof();
+    assert.equal(r.code, 0, JSON.stringify(r.j) + r.err); assert.equal(r.j.checks.rollout, 'ok (dark)');
+    withDark({ release: 'v0', switches: sw });
+    r = proof();
+    assert.equal(r.code, 1); assert.match(r.j.checks.rollout, /^FAIL: rollout\.dark\.release "v0" is not this release "v1"/);
+    withDark({ release: 'v1', switches: [] });
+    r = proof();
+    assert.equal(r.code, 1); assert.match(r.j.checks.rollout, /lists no switches/);
+  } finally { fs.writeFileSync(path.join(WD, 'pipeline.json'), P0); }
+});
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));

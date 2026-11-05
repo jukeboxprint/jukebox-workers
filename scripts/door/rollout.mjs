@@ -8,8 +8,16 @@
 //   1. The current deployment must be one version at 100% (a rollout already half done is left for a person).
 //   2. `wrangler versions upload` (the dist file, no bundling): the new version, not yet serving.
 //   3. Each step below 100: `wrangler versions deploy old@(100-p)% new@p%`, then watch Workers analytics per version
-//      for watch_minutes (longer, up to max_watch_minutes, until min_requests reach the new version). Breach or too
-//      little traffic: `wrangler versions deploy old@100%` and exit 1.
+//      for watch_minutes (longer, up to max_watch_minutes, until min_requests reach the new version). Breach:
+//      `wrangler versions deploy old@100%` and exit 1.
+//      Too little traffic (v1.0.9, Tyler 5 Nov 2026) never rolls back: past max_watch_minutes the step is held
+//      (holding_low_traffic) and polled up to max_wait_minutes (default 120) from the step's start; while held, the
+//      error rate is judged on any traffic. Still too little: step held_low_traffic, the split left as it is (no
+//      rollback, no promote), exit 4 (HELD_EXIT). A person decides.
+//      Dark release (v1.0.9): rollout.dark (worker.mjs darkProblems) and every declared switch read off on live (D1
+//      config row or KV key, with the deploy token) = no traffic count: each step waits watch_minutes and rolls back
+//      only on an error-rate breach on any traffic; at 100% the smoke list runs. Any doubt (a switch on, a read that
+//      fails, an unexpected answer, a bad declaration): dark_refused, and the normal watch.
 //      An analytics read that fails (an API timeout) is retried (analytics_tries, default 3, analytics_retry_s apart)
 //      before it counts as unreadable and rolls back.
 //      Refusals (v1.0.6): HTTP 302/403 as a share of each version's requests. The new share above the old by more than
@@ -27,7 +35,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parse } from 'smol-toml';
-import { worker, smokeList, pollHealth, retryRead, refusalSettings, refusalCount, judgeRefusals } from './worker.mjs';
+import { worker, smokeList, pollHealth, retryRead, refusalSettings, refusalCount, judgeRefusals,
+  HELD_EXIT, maxWait, waitProblems, darkProblems } from './worker.mjs';
 
 const { WORKER, WD, PIPE } = worker();
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
@@ -60,7 +69,9 @@ if (STEPS[STEPS.length - 1] !== 100 || STEPS.some((p, i) => p < 10 || p > 100 ||
 }
 // The job's timeout (the workflow passes it) must cover every watch, or a cancel could leave traffic split.
 const JOB_MIN = Number(process.env.DOOR_JOB_TIMEOUT_MIN || 0);
-const NEED_MIN = STEPS.filter(p => p < 100).length * CFG.max_watch_minutes + CFG.job_margin_minutes;
+if (waitProblems(CFG).length) die(waitProblems(CFG)[0]);
+const WAIT_MIN = Math.max(CFG.max_watch_minutes, maxWait(CFG));
+const NEED_MIN = STEPS.filter(p => p < 100).length * WAIT_MIN + CFG.job_margin_minutes;
 if (JOB_MIN && !RESTORE && NEED_MIN > JOB_MIN) die(`job timeout ${JOB_MIN} min < ${NEED_MIN} min the watch can take (pipeline.json)`);
 
 const api = async (p, init) => {
@@ -167,12 +178,55 @@ async function readRefusals(nw, old, newV, oldV, t0, p) {
   catch (e) { delete nw.refusals; delete old.refusals; log({ step: 'refusals_unreadable', pct: p, why: String(e && e.message || e).slice(0, 200) }); }
 }
 
-function judge(nw, old) {
-  if (nw.requests < CFG.min_requests) return 'wait';
+// Dark release: every declared switch's live value, read with the deploy token. Throws on any doubt.
+let DARK = false;
+async function readSwitch(s) {
+  const live = s.kind === 'd1' ? (toml.d1_databases || []).find(d => d.binding === s.binding) : (toml.kv_namespaces || []).find(k => k.binding === s.binding);
+  if (!live) throw new Error(`no live ${s.kind} binding ${s.binding}`);
+  if (s.kind === 'd1') {
+    const j = await api(`/accounts/${ACCT}/d1/database/${live.database_id}/query`, { method: 'POST',
+      body: JSON.stringify({ sql: `SELECT value FROM ${s.table || 'config'} WHERE key = ?`, params: [s.key] }) });
+    const r = Array.isArray(j.result) && j.result.length === 1 ? j.result[0] : null;
+    if (!r || r.success !== true || !Array.isArray(r.results) || r.results.length > 1) throw new Error('unexpected shape: ' + JSON.stringify(j).slice(0, 160));
+    if (!r.results.length) return null;
+    if (typeof (r.results[0] || {}).value !== 'string') throw new Error('unexpected value: ' + JSON.stringify(r.results[0]).slice(0, 120));
+    return r.results[0].value;
+  }
+  const r = await fetch(`${process.env.CF_API_BASE || 'https://api.cloudflare.com/client/v4'}/accounts/${ACCT}/storage/kv/namespaces/${live.id}/values/${encodeURIComponent(s.key)}`,
+    { headers: { authorization: 'Bearer ' + TOKEN }, signal: T() });
+  const t = await r.text();
+  if (r.status === 200) return t;
+  let j = {}; try { j = JSON.parse(t); } catch (e) {}
+  if (r.status === 404 && (j.errors || []).some(e => e && e.code === 10009)) return null;  // key not found = missing
+  throw new Error(`HTTP ${r.status} ${t.slice(0, 160)}`);
+}
+async function darkCheck() {
+  if (CFG.dark === undefined) return false;
+  const bad = darkProblems(CFG.dark, REL.version, PIPE, toml);
+  if (bad.length) { log({ step: 'dark_refused', why: bad.join('; ').slice(0, 300) }); return false; }
+  const read = [];
+  for (const s of CFG.dark.switches) {
+    let value;
+    try { value = await readSwitch(s); }
+    catch (e) { log({ step: 'dark_refused', why: `${s.kind} ${s.binding} ${s.key} unreadable: ${String(e.message || e).slice(0, 200)}` }); return false; }
+    if (value !== null && !s.off.includes(value)) { log({ step: 'dark_refused', why: `${s.kind} ${s.binding} ${s.key} is on (${JSON.stringify(value).slice(0, 60)})` }); return false; }
+    read.push({ kind: s.kind, binding: s.binding, key: s.key, value });
+  }
+  log({ step: 'dark', release: REL.version, switches: read });
+  return true;
+}
+
+// mode: 'watch' (as before), 'hold' (past max_watch_minutes with too little traffic: the error rate on any traffic) or
+// 'dark' (the error rate on any traffic, nothing else).
+function judge(nw, old, mode = 'watch') {
+  const errBad = nw.requests > 0 && nw.error_rate > CFG.max_error_rate && nw.error_rate > old.error_rate * CFG.max_error_rate_vs_old;
+  const errWhy = `error rate ${nw.error_rate.toFixed(4)} (old ${old.error_rate.toFixed(4)})`;
+  if (mode === 'dark') return errBad ? errWhy : 'ok';
+  if (nw.requests < CFG.min_requests) return mode === 'hold' && errBad ? errWhy : 'wait';
   const bad = [];
   const ref = judgeRefusals(nw.refusals, old.refusals, REF);
   if (ref) bad.push(ref);
-  if (nw.error_rate > CFG.max_error_rate && nw.error_rate > old.error_rate * CFG.max_error_rate_vs_old) bad.push(`error rate ${nw.error_rate.toFixed(4)} (old ${old.error_rate.toFixed(4)})`);
+  if (errBad) bad.push(errWhy);
   if (old.p50_ms && nw.p50_ms > old.p50_ms * CFG.max_p50_ms_vs_old) bad.push(`p50 ${nw.p50_ms} ms (old ${old.p50_ms})`);
   if (nw.success >= CFG.p99_min_requests && old.p99_ms && nw.p99_ms > old.p99_ms * CFG.max_p99_ms_vs_old) bad.push(`p99 ${nw.p99_ms} ms (old ${old.p99_ms})`);
   return bad.length ? bad.join('; ') : 'ok';
@@ -189,7 +243,7 @@ async function health() {
       for (const [k, v] of Object.entries(expect[p])) if (j[k] !== v) return `${p} ${k} is ${JSON.stringify(j[k])}, want ${JSON.stringify(v)}`;
     }
   }
-  if (CFG.smoke_after_100) {
+  if (CFG.smoke_after_100 || DARK) {
     const bad = (await smokeList(host, PIPE.smoke, CFG.http_timeout_s, ENV)).filter(r => !r.ok);
     if (bad.length) return `smoke: ${bad.map(r => `${r.name} got ${JSON.stringify(r.got)}`).join('; ')}`.slice(0, 300);
   }
@@ -241,6 +295,7 @@ if (!DRY) {
   oldV = cur[0].version_id;
 }
 log({ step: 'current', version: oldV });
+if (ENV === 'live' && !DRY) DARK = await darkCheck();
 
 // 2. upload
 wrangler(['versions', 'upload', '--message', msg(MSG), ...(TAG ? ['--tag', TAG.slice(0, 40)] : [])]);
@@ -269,6 +324,7 @@ for (const p of STEPS) {
   const t0 = Date.now();
   log({ step: 'deployed', pct: p, version: newV });
   if (DRY) continue;
+  let held = false;
   for (;;) {
     await sleep(CFG.poll_seconds * 1000);
     const mins = (Date.now() - t0) / 60000 / SCALE;
@@ -278,12 +334,22 @@ for (const p of STEPS) {
         onRetry: (attempt, e) => log({ step: 'analytics_retry', pct: p, attempt, why: String(e && e.message || e).slice(0, 120) }) });
     }
     catch (e) { await back(oldV, 'analytics unreadable: ' + String(e.message || e).slice(0, 120)); }
-    await readRefusals(nw, old, newV, oldV, t0, p);
-    const v = judge(nw, old);
-    log({ step: 'watch', pct: p, minutes: Math.round(mins * 10) / 10, new: nw, old, verdict: v });
+    if (!DARK) await readRefusals(nw, old, newV, oldV, t0, p);
+    const holding = !DARK && mins >= CFG.max_watch_minutes;
+    const v = judge(nw, old, DARK ? 'dark' : holding ? 'hold' : 'watch');
+    log({ step: 'watch', pct: p, minutes: Math.round(mins * 10) / 10, new: nw, old, verdict: v, ...(DARK ? { dark: true } : {}) });
     if (v !== 'ok' && v !== 'wait') await back(oldV, v);
     if (v === 'ok' && mins >= CFG.watch_minutes) break;
-    if (mins >= CFG.max_watch_minutes) await back(oldV, v === 'wait' ? `not enough traffic to judge (${nw.requests} < ${CFG.min_requests})` : v);
+    if (v === 'wait' && holding && !held) {
+      held = true;
+      log({ step: 'holding_low_traffic', pct: p, minutes: Math.round(mins * 10) / 10, requests: nw.requests, min_requests: CFG.min_requests, until_minutes: WAIT_MIN });
+    }
+    if (v === 'wait' && mins >= WAIT_MIN) {
+      log({ step: 'held_low_traffic', pct: p, minutes: Math.round(mins * 10) / 10, new_requests: nw.requests, old_requests: old.requests,
+        min_requests: CFG.min_requests, max_wait_minutes: WAIT_MIN, split: { [oldV]: 100 - p, [newV]: p },
+        note: `held at ${p}%, no rollback, no promote: a person decides (Rollback workflow, or the dashboard)` });
+      process.exit(HELD_EXIT);
+    }
   }
 }
 log({ step: 'done', version: newV });
