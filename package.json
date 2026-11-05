@@ -1,6 +1,6 @@
 {
   "name": "@jukebox/workers",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "private": true,
   "type": "module",
   "description": "Jukebox Print's shared Cloudflare Worker pipeline and packages. docs/PATTERN.md.",

@@ -1,5 +1,9 @@
 # Changes
 
+## v1.0.10 (2026-11-05)
+
+- `worker-deploy.yml`: the live job's restore step exits 0 with "rollout never started (no rollout.ndjson)" when the run stopped before the rollout (for example at the live drift check). Before, `jq` on the missing file failed the step with exit 2 under `pipefail`, a second red step on top of the real failure (jukebox-door Deploy run 41990522663, 5 Nov 2026). No other change.
+
 ## v1.0.9 (2026-11-05)
 
 Tyler's Go live rules (5 Nov 2026, relayed by the overseer).
