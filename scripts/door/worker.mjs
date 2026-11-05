@@ -258,3 +258,42 @@ export const consumerDiff = (want, have) => !have ? ['not set']
 // The request body wrangler 4.156 sends to POST /queues/<id>/consumers and PUT .../consumers/<consumer_id>.
 export const consumerBody = (want, self) => ({ type: 'worker', dead_letter_queue: want.dead_letter_queue || undefined, script_name: self,
   settings: { batch_size: want.batch_size, max_retries: want.max_retries, max_wait_time_ms: want.max_wait_time_ms } });
+
+// Go live rules (v1.0.9, Tyler 5 Nov 2026). Too little traffic never rolls back: the watch holds the step it is on and
+// keeps polling up to rollout.max_wait_minutes (default 120, from the step's start; at least max_watch_minutes, at most
+// 300). Still too little: the run stops with step held_low_traffic and exit HELD_EXIT, the split left as it is.
+export const HELD_EXIT = 4;
+export const MAX_WAIT_DEFAULT = 120;
+export const maxWait = r => (r || {}).max_wait_minutes === undefined ? MAX_WAIT_DEFAULT : r.max_wait_minutes;
+export function waitProblems(r) {
+  const v = maxWait(r), w = (r || {}).max_watch_minutes;
+  return typeof v === 'number' && Number.isFinite(v) && v >= (Number(w) || 0) && v <= 300 ? []
+    : [`rollout.max_wait_minutes ${JSON.stringify(v)}: a number of minutes, at least max_watch_minutes (${w}), at most 300`];
+}
+// rollout.dark: a release whose new code is all behind switches that are off. { release: <release.json version>,
+// switches: [{ kind: 'd1', binding, key, table? (default config), off: [...] } | { kind: 'kv', binding, key, off: [...] }] }.
+// A switch is off when its live value is missing or one of `off` (exact strings). proof.mjs refuses any problem here;
+// rollout.mjs reads every switch before it skips the traffic count (dark_refused on any doubt).
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export function darkProblems(dark, version, pipe, toml) {
+  if (!dark || typeof dark !== 'object' || Array.isArray(dark)) return ['rollout.dark must be an object'];
+  const bad = [];
+  for (const k of Object.keys(dark)) if (!['release', 'switches'].includes(k)) bad.push(`rollout.dark.${k} is not handled`);
+  if (dark.release !== version) bad.push(`rollout.dark.release ${JSON.stringify(dark.release)} is not this release ${JSON.stringify(version)} (a dark declaration covers one release: remove it or set it)`);
+  if (!Array.isArray(dark.switches) || !dark.switches.length) bad.push('rollout.dark lists no switches');
+  if (!((pipe || {}).smoke || []).length) bad.push('rollout.dark needs pipeline.json smoke (a dark release is judged by its smoke list)');
+  for (const [i, s] of (Array.isArray(dark.switches) ? dark.switches : []).entries()) {
+    const at = `rollout.dark.switches[${i}]`;
+    if (!s || typeof s !== 'object') { bad.push(`${at} must be an object`); continue; }
+    const keys = s.kind === 'd1' ? ['kind', 'binding', 'key', 'table', 'off'] : ['kind', 'binding', 'key', 'off'];
+    for (const k of Object.keys(s)) if (!keys.includes(k)) bad.push(`${at}.${k} is not handled`);
+    if (!['kv', 'd1'].includes(s.kind)) bad.push(`${at}.kind ${JSON.stringify(s.kind)}: kv or d1`);
+    if (typeof s.key !== 'string' || !s.key) bad.push(`${at}.key must be a string`);
+    if (s.table !== undefined && !IDENT.test(String(s.table))) bad.push(`${at}.table ${JSON.stringify(s.table)}`);
+    if (!Array.isArray(s.off) || s.off.some(x => typeof x !== 'string')) bad.push(`${at}.off must be a list of strings`);
+    const list = s.kind === 'd1' ? (toml || {}).d1_databases : (toml || {}).kv_namespaces;
+    const b = (list || []).find(x => x.binding === s.binding);
+    if (!b || !(s.kind === 'd1' ? b.database_id : b.id) || /TBD/.test(s.kind === 'd1' ? b.database_id : b.id)) bad.push(`${at}.binding ${JSON.stringify(s.binding)}: not a live ${s.kind} binding in wrangler.toml`);
+  }
+  return bad;
+}

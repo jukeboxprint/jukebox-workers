@@ -1,5 +1,26 @@
 # Changes
 
+## v1.0.9 (2026-11-05)
+
+Tyler's Go live rules (5 Nov 2026, relayed by the overseer).
+- `scripts/door/rollout.mjs`: **too little traffic no longer rolls back** (before: a rollback, "not enough traffic to
+  judge", at `max_watch_minutes`). This changes every caller, with or without the new settings. The step holds and
+  keeps polling up to `rollout.max_wait_minutes` (new, default 120; proof and rollout refuse a value below
+  `max_watch_minutes` or above 300). While held, the error rate is judged on any traffic. Still too little:
+  `held_low_traffic` with the counts, exit 4, the split left as it is. Errors, latency, refusals and unreadable
+  analytics roll back as before.
+- `rollout.dark` (new, optional): a release behind switches that are off. CI (`proof.mjs`, check `rollout`) refuses it
+  unless it names this release, lists switches (`kind` d1 or kv, a live binding, `key`, `off`) and the Worker has a
+  smoke list. At Go live every switch is read on live (D1 query or KV value, deploy token); all off = no traffic count,
+  only an error-rate breach on any traffic rolls back, smoke list at 100%. Any doubt = `dark_refused`, the normal watch.
+- `worker-deploy.yml`: the live job's timeout covers `max_wait_minutes`; exit 4 fails the rollout step with "Held at N%,
+  no rollback" and skips the restore step.
+- `docs/PATTERN.md` section 10: writes that create POs or touch money keep 3 weekdays of shadow; other writes drop to
+  one business day. Read-only one business day and the clean week are unchanged.
+- Helpers in `scripts/door/worker.mjs`. Tests: `tests/scripts/rollout.test.mjs` (hold then promote, held at the limit,
+  error breach while held, dark off / on / unreadable / wrong release), `worker.test.mjs`, `proof.test.mjs`. Packages
+  unchanged.
+
 ## v1.0.8 (2026-11-05)
 
 - `scripts/door/drift.mjs`: optional pipeline.json key `release_managed.crons`, a list of cron expressions a release adds
