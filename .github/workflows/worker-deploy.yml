@@ -259,8 +259,9 @@ jobs:
         if: ${{ (failure() || cancelled()) && steps.rollout.outputs.held != 'true' }}
         env: { CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}' }
         run: |
+          if [ ! -s rollout.ndjson ]; then echo "rollout never started (no rollout.ndjson): nothing to restore"; exit 0; fi
           if jq -e 'select(.step == "held_low_traffic")' rollout.ndjson >/dev/null 2>&1; then echo "held at low traffic: the split is left as it is"; exit 0; fi
-          old="$(jq -r 'select(.step == "current") | .version' rollout.ndjson 2>/dev/null | head -1)"
+          old="$(jq -r 'select(.step == "current") | .version' rollout.ndjson 2>/dev/null | head -1 || true)"
           if [ -z "$old" ]; then echo "rollout never started: nothing to restore"; exit 0; fi
           node "$P/scripts/door/rollout.mjs" --worker "$W" --env live --restore "$old"
       - name: Summary
