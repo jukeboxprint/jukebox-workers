@@ -103,6 +103,9 @@ jobs:
   a queue (or dead-letter queue) that does not exist fails drift and the deploy, named. Tyler creates it first, in the
   dashboard or with `wrangler queues create <name>`. A consumer the toml drops is removed by hand. A rollback keeps the
   consumers.
+- **Crons (v1.0.8):** a release that adds or removes crons on a Worker that already has some lists them in
+  `pipeline.json` `release_managed.crons`. Drift then notes the difference instead of refusing it; any other cron
+  difference is refused on live as before. Remove the key in the first PR after that release is live.
 - **Rollback by hand:** `wrangler rollback`, then the smoke list.
 - **D1:** creates any database the tomls name and prints ids; the ids go into the toml by PR.
 

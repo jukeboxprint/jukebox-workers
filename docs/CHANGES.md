@@ -1,5 +1,20 @@
 # Changes
 
+## v1.0.8 (2026-11-05)
+
+- `scripts/door/drift.mjs`: optional pipeline.json key `release_managed.crons`, a list of cron expressions a release adds
+  to (or takes out of) the toml's `[triggers]`. Ported from jukebox-copilot #240 (copilot-jobs v7 adds six ops crons
+  beside v6's drain cron; drift refused any cron change on a Worker that already had crons). When live's schedules
+  differ from the toml only in those crons, drift notes it ("the release adds … / removes …"); the deploy's cron step
+  sets them as before. Any other difference is refused on live and noted on staging, as in v1.0.7. Remove the key in the
+  first PR after that release is live.
+  - Differs from copilot's: copilot notes only live = exactly the toml minus the listed crons. Here live may also have
+    some of them already (a set, then a script rollback), and a listed cron the toml drops is noted too.
+  - Without the key (or with `[]`): byte-identical output. `tests/scripts/drift_parity.test.mjs` runs the v1.0.7
+    drift.mjs (`tests/scripts/fixtures/drift.v1.0.7.mjs`, pinned by sha256) and this one against the same fake
+    Cloudflare API: four Workers, live and staging, 11 scenarios (crons equal, added, removed, changed, none on live;
+    binding, secret, settings and script differences). Key tests in `tests/scripts/drift.test.mjs`. Packages unchanged.
+
 ## v1.0.7 (2026-11-04)
 
 - Queues, asked for by jukebox-door PR #9 (jbx-bq v2: the BigQuery write path as a Queue consumer; the producer is
