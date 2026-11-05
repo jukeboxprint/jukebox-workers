@@ -22,7 +22,8 @@
 //             bindings are compared like the others (binding + service name).
 //   kind passthrough only (pipeline.json; jbx-claude-cache, jbx-desk-live), the non-versioned settings: no logpush, no tail
 //   consumers, crons (schedules) as the toml's [triggers] (none set yet: noted, the deploy sets them), workers.dev and
-//   previews as the toml (subdomain). Live: refused; staging: noted.
+//   previews as the toml (subdomain). Live: refused; staging: noted. Crons that differ only in pipeline.json
+//   release_managed.crons (v1.0.8): noted, not refused.
 //   queues (v1.0.7, only when the toml names any for the env): producer bindings compared like the others; every queue
 //             named must exist (missing: refused, "create it ... on Tyler's word"); consumers compared with the toml
 //             (not set yet: noted; held by another Worker: refused; different: as bindings).
@@ -41,8 +42,10 @@ const { WD, KIND, PIPE } = worker();
 // forward): a difference between live and the toml there is what the deploy is for, so it is noted, not refused.
 // vars: plain-var names; services: service-binding names (the front door: SUGGEST, until v40 is live).
 // kv: KV binding names (copilot-suggest v2 binds OUTBOX_KV over a live v1 that has none). queues (v1.0.7): consumer
-// queue names whose settings the release changes.
-const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [] }, PIPE.release_managed || {});
+// queue names whose settings the release changes. crons (v1.0.8): cron expressions the release adds to (or takes out of)
+// the toml's [triggers] over a live Worker that runs the others (copilot-jobs v7 adds its ops crons beside v6's drain
+// cron). Live differing from the toml only in those is noted, not refused. Remove the key once that release is live.
+const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [], crons: [] }, PIPE.release_managed || {});
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
 const ENV = arg('--env') || 'live';
 const KNOWN = new Set([arg('--prev-sha'), ...(arg('--known-shas') ? fs.readFileSync(arg('--known-shas'), 'utf8').split(/\s+/) : [])]
@@ -171,11 +174,17 @@ try {
     if (ss.logpush) bindingIssue(`logpush on ${ENV} (not in toml)`);
     if ((ss.tail_consumers || []).length) bindingIssue(`tail consumers on ${ENV} (not in toml)`);
     // Crons: the Worker's schedules against the toml's [triggers] crons for this env. None set yet while the toml has
-    // some: noted (the deploy sets them, scripts/door/triggers.mjs); any other difference: a binding issue.
+    // some: noted (the deploy sets them, scripts/door/triggers.mjs); differing only in release_managed.crons (v1.0.8):
+    // noted; any other difference: a binding issue. Without release_managed.crons: exactly as v1.0.7.
     const sch = await api(`/workers/scripts/${NAME}/schedules`);
     const haveC = ((sch || {}).schedules || []).map(x => String(x.cron || '').trim()).filter(Boolean), wantC = cronsFor(toml, ENV);
     if (cronPlan(wantC, haveC) === 'set') {
+      const mc = (MANAGED.crons || []).map(x => String(x).trim());
+      const adds = wantC.filter(x => !haveC.includes(x)), drops = [...new Set(haveC)].sort().filter(x => !wantC.includes(x));
       if (!haveC.length) notes.push(`crons on ${ENV} not set yet: the deploy sets ${JSON.stringify(wantC)}`);
+      else if (mc.length && adds.concat(drops).every(x => mc.includes(x))) notes.push(`crons on ${ENV}: ${JSON.stringify(haveC)}; the release`
+        + (adds.length ? ` adds ${JSON.stringify(adds)}` : '') + (adds.length && drops.length ? ' and' : '') + (drops.length ? ` removes ${JSON.stringify(drops)}` : '')
+        + ' (release_managed.crons; the deploy sets them)');
       else bindingIssue(`crons on ${ENV}: ${JSON.stringify(haveC)}, toml ${JSON.stringify(wantC)}`);
     }
     const sd = await api(`/workers/scripts/${NAME}/subdomain`);

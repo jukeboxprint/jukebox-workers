@@ -1,6 +1,7 @@
 // scripts/door/drift.mjs against a fake Cloudflare API. A Worker with no queues reads and answers exactly as v1.0.6 did
 // (same requests, same line). With queues (v1.0.7): producer bindings compared like the others, every queue named must
-// exist, and consumers are compared with the toml.
+// exist, and consumers are compared with the toml. pipeline.json release_managed.crons (v1.0.8): crons a release adds or
+// removes are noted, not refused (byte-identical without the key: drift_parity.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,7 +41,7 @@ const api = http.createServer((req, res) => {
   const m = u.pathname.match(/^\/accounts\/acct\/workers\/scripts\/([^/]+)\/(.+)$/);
   if (m && m[2] === 'settings') return ok({ compatibility_date: '2026-10-01', compatibility_flags: [], usage_model: 'standard', bindings: st.bindings[m[1]] || bindings() });
   if (m && m[2] === 'script-settings') return ok({ logpush: false, tail_consumers: [], observability: null });
-  if (m && m[2] === 'schedules') return ok({ schedules: [] });
+  if (m && m[2] === 'schedules') return ok({ schedules: (st.crons || []).map(cron => ({ cron })) });
   if (m && m[2] === 'subdomain') return ok({ enabled: true, previews_enabled: false });
   if (m && m[2] === 'content/v2') { res.setHeader('content-type', 'application/javascript'); return res.end(SCRIPT_BODY); }
   if (u.pathname === '/accounts/acct/queues') return ok(st.queues.filter(q => u.searchParams.getAll('name').includes(q.queue_name)));
@@ -98,5 +99,50 @@ test('consumer settings differ: refused on live, noted on staging, noted when re
   pipeline({ release_managed: { queues: ['rows'] } });
   r = await run('live', { bindings: { 'jbx-x': live }, queues: qs });
   assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes('release sets queue consumer rows: batch_size 10, toml 100'));
+});
+// release_managed.crons (v1.0.8): live differing from the toml only in those crons is noted, not refused.
+const CRONS = '[triggers]\ncrons = ["* * * * *", "*/10 * * * *", "16,45 11 * * *"]\n\n';
+const SCRONS = '[env.staging.triggers]\ncrons = ["* * * * *", "*/10 * * * *"]\n\n';
+const NOTE = (env, have, adds, drops) => `crons on ${env}: ${JSON.stringify(have)}; the release` + (adds ? ` adds ${JSON.stringify(adds)}` : '')
+  + (adds && drops ? ' and' : '') + (drops ? ` removes ${JSON.stringify(drops)}` : '') + ' (release_managed.crons; the deploy sets them)';
+test('release_managed.crons: live with exactly the others is noted (live and staging); without the key, refused', async () => {
+  writeToml(BASE + CRONS + STAGING + SCRONS);
+  pipeline();
+  let r = await run('live', { crons: ['* * * * *'] });
+  assert.equal(r.code, 1); assert.deepEqual(r.j.problems, ['crons on live: ["* * * * *"], toml ["* * * * *","*/10 * * * *","16,45 11 * * *"]']);
+  pipeline({ release_managed: { crons: ['*/10 * * * *', '16,45 11 * * *'] } });
+  r = await run('live', { crons: ['* * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.deepEqual(r.j.problems, []);
+  assert.ok(r.j.notes.includes(NOTE('live', ['* * * * *'], ['*/10 * * * *', '16,45 11 * * *'])), r.out);
+  r = await run('staging', { crons: ['* * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes(NOTE('staging', ['* * * * *'], ['*/10 * * * *'])), r.out);
+  // Some of them already set (a deploy that set them, then a rollback of the script): still only managed ones differ.
+  r = await run('live', { crons: ['* * * * *', '*/10 * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes(NOTE('live', ['* * * * *', '*/10 * * * *'], ['16,45 11 * * *'])), r.out);
+  // Live equal to the toml: nothing to note. None set yet: noted as before.
+  r = await run('live', { crons: ['16,45 11 * * *', '*/10 * * * *', '* * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.ok(!r.j.notes.some(n => /^crons/.test(n)), r.out);
+  r = await run('live', {});
+  assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes('crons on live not set yet: the deploy sets ["* * * * *","*/10 * * * *","16,45 11 * * *"]'), r.out);
+});
+test('release_managed.crons: a managed cron the toml drops is noted; any unmanaged difference is still refused', async () => {
+  writeToml(BASE + '[triggers]\ncrons = ["* * * * *"]\n\n' + STAGING);
+  pipeline({ release_managed: { crons: ['*/10 * * * *'] } });
+  let r = await run('live', { crons: ['* * * * *', '*/10 * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes(NOTE('live', ['* * * * *', '*/10 * * * *'], null, ['*/10 * * * *'])), r.out);
+  writeToml(BASE + CRONS + STAGING + SCRONS);
+  pipeline({ release_managed: { crons: ['*/10 * * * *', '16,45 11 * * *'] } });
+  // An extra cron on live nobody named, the unmanaged cron missing, or changed: refused on live, noted on staging.
+  for (const crons of [['* * * * *', '0 3 * * *'], ['*/10 * * * *'], ['*/2 * * * *']]) {
+    r = await run('live', { crons });
+    assert.equal(r.code, 1, r.out);
+    assert.deepEqual(r.j.problems, [`crons on live: ${JSON.stringify(crons)}, toml ["* * * * *","*/10 * * * *","16,45 11 * * *"]`]);
+  }
+  r = await run('staging', { crons: ['*/2 * * * *'] });
+  assert.equal(r.code, 0, r.out); assert.ok(r.j.notes.includes('crons on staging: ["*/2 * * * *"], toml ["* * * * *","*/10 * * * *"]'), r.out);
+  // An empty list is the same as no key.
+  pipeline({ release_managed: { crons: [] } });
+  r = await run('live', { crons: ['* * * * *'] });
+  assert.equal(r.code, 1); assert.match(r.j.problems.join(), /^crons on live: \["\* \* \* \* \*"\], toml/);
 });
 test.after(() => { api.close(); fs.rmSync(dir, { recursive: true, force: true }); });
