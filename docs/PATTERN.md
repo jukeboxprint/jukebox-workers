@@ -321,3 +321,10 @@ parallel. **T** = Tyler, **C** = Claude.
 
 **7. Sign-in off n8n (last)**
 - Door exchange, Google client secret, allow-list, `dashboard_sessions`, Access Groups refresh → the front door + its D1.
+
+**8. Watchdogs off n8n**
+- C: replace the n8n watchdogs with Cloudflare: a `jbx-watchdog` Worker (in jukebox-door) on a cron; each Worker and
+  n8n job reports a heartbeat (signed, `@jukebox/workers/push-sign`) into its D1; missing or late heartbeats and failed
+  checks alert through Cloudflare notifications to email and Slack. Recipients and thresholds in its D1 config.
+- T: the notification destinations (email, Slack webhook) in Cloudflare; then retire the n8n watchdog workflows one by
+  one after the Worker has alerted in parallel.
