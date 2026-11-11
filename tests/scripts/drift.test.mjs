@@ -72,6 +72,25 @@ test('queues on live, all as the toml: ok; the producer binding is compared', as
   const r2 = await run('live', { queues: [Q('q1', 'rows', [C('jbx-x')]), Q('q2', 'rows-dlq')] });
   assert.equal(r2.code, 1); assert.deepEqual(r2.j.problems, ['missing on live or different: queue BQ_DLQ rows-dlq']);
 });
+// release_managed.queue_producers (v1.0.11): a release adding a producer binding to a live Worker that has none is noted.
+test('release_managed.queue_producers: a listed producer missing on live is noted, not refused; unlisted still refused', async () => {
+  writeToml(BASE + QUEUES + STAGING + SQUEUES);
+  const st = { queues: [Q('q1', 'rows', [C('jbx-x')]), Q('q2', 'rows-dlq')] };
+  pipeline({ release_managed: { queue_producers: ['BQ_DLQ'] } });
+  const r = await run('live', st);
+  assert.equal(r.code, 0, r.out); assert.deepEqual(r.j.problems, []);
+  assert.ok(r.j.notes.includes('release sets queue BQ_DLQ rows-dlq'), r.out);
+  pipeline({ release_managed: { queue_producers: ['OTHER'] } });
+  const r2 = await run('live', st);
+  assert.equal(r2.code, 1); assert.deepEqual(r2.j.problems, ['missing on live or different: queue BQ_DLQ rows-dlq']);
+  pipeline({ release_managed: { queue_producers: [] } });
+  const r3 = await run('live', st);
+  assert.equal(r3.code, 1); assert.deepEqual(r3.j.problems, ['missing on live or different: queue BQ_DLQ rows-dlq']);
+  pipeline({ release_managed: { queue_producers: ['BQ_DLQ'] } });
+  const r4 = await run('live', { queues: st.queues, bindings: { 'jbx-x': bindings([{ type: 'queue', name: 'BQ_DLQ', queue_name: 'rows-dlq' }]) } });
+  assert.equal(r4.code, 0, r4.out); assert.deepEqual(r4.j.problems, []); assert.ok(!r4.j.notes.some(n => n.startsWith('release sets queue')), r4.out);
+  pipeline();
+});
 test('a queue the toml names does not exist: refused, named, on staging too', async () => {
   pipeline(); writeToml(BASE + QUEUES + STAGING + SQUEUES);
   const r = await run('staging', { queues: [] });

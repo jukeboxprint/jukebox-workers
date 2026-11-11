@@ -122,6 +122,9 @@ jobs:
 - **Crons (v1.0.8):** a release that adds or removes crons on a Worker that already has some lists them in
   `pipeline.json` `release_managed.crons`. Drift then notes the difference instead of refusing it; any other cron
   difference is refused on live as before. Remove the key in the first PR after that release is live.
+- **A new Queue producer on a live Worker (v1.0.11):** list its binding name in `pipeline.json`
+  `release_managed.queue_producers`. Drift notes "release sets queue <binding> <queue>" instead of refusing it; the
+  queue must already exist. Remove the key in the first PR after that release is live.
 - **Rollback by hand:** `wrangler rollback`, then the smoke list.
 - **D1:** creates any database the tomls name and prints ids; the ids go into the toml by PR.
 
