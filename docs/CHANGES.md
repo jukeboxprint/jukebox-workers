@@ -1,5 +1,18 @@
 # Changes
 
+## v1.0.11 (2026-11-10)
+
+- `scripts/door/drift.mjs`: optional pipeline.json key `release_managed.queue_producers`, a list of Queue producer
+  binding names a release adds to a live Worker. Until now, adding the first `[[queues.producers]]` binding to a Worker
+  already live was refused by the live drift check ("missing on live or different: queue <binding> <queue>"), because
+  `release_managed` covered only vars, services, kv, queue consumers and crons. With the binding listed, drift notes
+  "release sets queue <binding> <queue>" instead; the upload sets the binding as in v1.0.7. Any other binding difference
+  is refused on live as before. Every queue the toml names must still exist (the pipeline never creates one). Remove the
+  key in the first PR after that release is live.
+  - Without the key (or with `[]`): unchanged output (`tests/scripts/drift_parity.test.mjs` passes unchanged).
+  - Tests: `tests/scripts/drift.test.mjs` (listed: noted; another name or `[]`: refused; already on live: no note).
+    Packages unchanged.
+
 ## v1.0.10 (2026-11-05)
 
 - `worker-deploy.yml`: the live job's restore step exits 0 with "rollout never started (no rollout.ndjson)" when the run stopped before the rollout (for example at the live drift check). Before, `jq` on the missing file failed the step with exit 2 under `pipefail`, a second red step on top of the real failure (jukebox-door Deploy run 41990522663, 5 Nov 2026). No other change.

@@ -24,6 +24,8 @@
 //   consumers, crons (schedules) as the toml's [triggers] (none set yet: noted, the deploy sets them), workers.dev and
 //   previews as the toml (subdomain). Live: refused; staging: noted. Crons that differ only in pipeline.json
 //   release_managed.crons (v1.0.8): noted, not refused.
+//   release_managed.queue_producers (v1.0.11): producer binding names a release adds to (or takes off) a live Worker:
+//   noted ("release sets queue <binding> <queue>"), not refused.
 //   queues (v1.0.7, only when the toml names any for the env): producer bindings compared like the others; every queue
 //             named must exist (missing: refused, "create it ... on Tyler's word"); consumers compared with the toml
 //             (not set yet: noted; held by another Worker: refused; different: as bindings).
@@ -44,8 +46,10 @@ const { WD, KIND, PIPE } = worker();
 // kv: KV binding names (copilot-suggest v2 binds OUTBOX_KV over a live v1 that has none). queues (v1.0.7): consumer
 // queue names whose settings the release changes. crons (v1.0.8): cron expressions the release adds to (or takes out of)
 // the toml's [triggers] over a live Worker that runs the others (copilot-jobs v7 adds its ops crons beside v6's drain
-// cron). Live differing from the toml only in those is noted, not refused. Remove the key once that release is live.
-const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [], crons: [] }, PIPE.release_managed || {});
+// cron). queue_producers (v1.0.11): Queue producer binding names a release adds to a live Worker that has none yet (a
+// Worker's first BigQuery rows producer). Live differing from the toml only in those is noted, not refused. Remove the
+// key once that release is live.
+const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [], crons: [], queue_producers: [] }, PIPE.release_managed || {});
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
 const ENV = arg('--env') || 'live';
 const KNOWN = new Set([arg('--prev-sha'), ...(arg('--known-shas') ? fs.readFileSync(arg('--known-shas'), 'utf8').split(/\s+/) : [])]
@@ -141,7 +145,8 @@ try {
   // the toml's bindings yet: the first upload sets them, as on staging); any other live script: refused as before.
   const bindingIssue = m => (ENV === 'live' ? (PLACEHOLDER_LIVE ? deferred : problems) : notes).push(m);
   const managedVar = e => MANAGED.vars.some(n => e.startsWith(`plain_text ${n} `)) || (MANAGED.services || []).some(n => e.startsWith(`service ${n} `))
-    || (MANAGED.kv || []).some(n => e.startsWith(`kv_namespace ${n} `));
+    || (MANAGED.kv || []).some(n => e.startsWith(`kv_namespace ${n} `))
+    || (MANAGED.queue_producers || []).some(n => e.startsWith(`queue ${n} `));   // v1.0.11
   for (const e of expected) if (!have.includes(e)) (managedVar(e) ? notes.push(`release sets ${e}`) : bindingIssue(`missing on ${ENV} or different: ${e}`));
   for (const h of have) if (!expected.includes(h) && !managedVar(h)) bindingIssue(`on ${ENV} but not in toml: ${h}`);
   for (const n of wantSecrets) if (!secrets.includes(n)) problems.push(`secret missing on ${ENV}: ${n}`);
