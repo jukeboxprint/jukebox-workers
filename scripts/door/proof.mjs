@@ -20,6 +20,7 @@
 //      door's toml sets none of these, so its upload form check ("no observability") is unchanged.
 //   5. rollout (v1.0.9, when pipeline.json has rollout): max_wait_minutes in range; a rollout.dark declaration must name
 //      this release (release.json version, so it cannot carry over), list its switches and have a smoke list.
+// R2 buckets (v1.0.12): `r2_bucket <binding> <bucket>` in the form, compared like the others.
 // Prints one JSON line; exit 1 on any failure.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -116,6 +117,7 @@ for (const env of ['live', 'staging']) {
       : b.type === 'd1' ? `d1 ${b.name} ${b.id || b.database_id}` : b.type === 'plain_text' ? `plain_text ${b.name} ${b.text}`
       : b.type === 'durable_object_namespace' ? doBinding(b.name, b.class_name, b.script_name, want.name)
       : b.type === 'service' ? `service ${b.name} ${b.service}` : b.type === 'hyperdrive' ? `hyperdrive ${b.name} ${b.id}`
+      : b.type === 'r2_bucket' ? `r2_bucket ${b.name} ${b.bucket_name}`
       : b.type === 'queue' && b.delivery_delay == null ? `queue ${b.name} ${b.queue_name}` : `${b.type} ${b.name}`).sort();
     if (JSON.stringify(got) !== JSON.stringify(wantBindings(env))) throw new Error('form bindings ' + JSON.stringify(got));
     out.checks['upload_' + env] = 'ok';

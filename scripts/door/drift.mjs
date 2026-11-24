@@ -49,7 +49,7 @@ const { WD, KIND, PIPE } = worker();
 // cron). queue_producers (v1.0.11): Queue producer binding names a release adds to a live Worker that has none yet (a
 // Worker's first BigQuery rows producer). Live differing from the toml only in those is noted, not refused. Remove the
 // key once that release is live.
-const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [], crons: [], queue_producers: [] }, PIPE.release_managed || {});
+const MANAGED = Object.assign({ vars: [], services: [], kv: [], queues: [], crons: [], queue_producers: [], r2: [] }, PIPE.release_managed || {});   // v1.0.12: r2 = R2 binding names a release adds
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
 const ENV = arg('--env') || 'live';
 const KNOWN = new Set([arg('--prev-sha'), ...(arg('--known-shas') ? fs.readFileSync(arg('--known-shas'), 'utf8').split(/\s+/) : [])]
@@ -136,6 +136,7 @@ try {
     else if (b.type === 'durable_object_namespace') have.push(doBinding(b.name, b.class_name, b.script_name, NAME));
     else if (b.type === 'service') have.push(`service ${b.name} ${b.service}`);
     else if (b.type === 'hyperdrive') have.push(`hyperdrive ${b.name} ${b.id}`);
+    else if (b.type === 'r2_bucket') have.push(`r2_bucket ${b.name} ${b.bucket_name}`);   // v1.0.12
     else if (b.type === 'queue') have.push(`queue ${b.name} ${b.queue_name}`);
     else have.push(`${b.type} ${b.name} (not handled by the pipeline)`);
   }
@@ -146,7 +147,8 @@ try {
   const bindingIssue = m => (ENV === 'live' ? (PLACEHOLDER_LIVE ? deferred : problems) : notes).push(m);
   const managedVar = e => MANAGED.vars.some(n => e.startsWith(`plain_text ${n} `)) || (MANAGED.services || []).some(n => e.startsWith(`service ${n} `))
     || (MANAGED.kv || []).some(n => e.startsWith(`kv_namespace ${n} `))
-    || (MANAGED.queue_producers || []).some(n => e.startsWith(`queue ${n} `));   // v1.0.11
+    || (MANAGED.queue_producers || []).some(n => e.startsWith(`queue ${n} `))   // v1.0.11
+    || (MANAGED.r2 || []).some(n => e.startsWith(`r2_bucket ${n} `));   // v1.0.12
   for (const e of expected) if (!have.includes(e)) (managedVar(e) ? notes.push(`release sets ${e}`) : bindingIssue(`missing on ${ENV} or different: ${e}`));
   for (const h of have) if (!expected.includes(h) && !managedVar(h)) bindingIssue(`on ${ENV} but not in toml: ${h}`);
   for (const n of wantSecrets) if (!secrets.includes(n)) problems.push(`secret missing on ${ENV}: ${n}`);
