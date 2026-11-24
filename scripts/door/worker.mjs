@@ -31,6 +31,9 @@ export function wantBindings(toml, env) {
   const w = envConfig(toml, env);
   const e = [];
   for (const k of w.kv_namespaces || []) e.push(`kv_namespace ${k.binding} ${k.id}`);
+  // R2 buckets (v1.0.12): never inherited by an env (wrangler: r2_buckets is not inheritable), like Hyperdrive, so an env
+  // without its own has none.
+  for (const b of (env === 'live' ? toml.r2_buckets : ((toml.env || {})[env] || {}).r2_buckets) || []) e.push(`r2_bucket ${b.binding} ${b.bucket_name}`);
   for (const d of w.d1_databases || []) e.push(`d1 ${d.binding} ${d.database_id}`);
   for (const [k, v] of Object.entries(w.vars || {})) e.push(`plain_text ${k} ${v}`);
   // Durable Object bindings (jbx-desk-live) and service bindings: never inherited from the top level by wrangler, and an
