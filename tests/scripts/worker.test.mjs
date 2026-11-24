@@ -198,3 +198,12 @@ test('darkProblems: bad switches refused (kind, key, off, table, unknown keys, b
   assert.match(one({ kind: 'kv', binding: 'SNAP', key: 'k', off: [] }), /binding "SNAP": not a live kv binding/);
   assert.match(one({ kind: 'kv', binding: 'DB', key: 'k', table: 'config', off: [] }), /\.table is not handled/);
 });
+// r2_buckets (v1.0.12): carried like Hyperdrive, never inherited by an env.
+test('r2_buckets: live carries them; an env without its own has none; an env with its own gets its own', () => {
+  const t = structuredClone(toml); t.r2_buckets = [{ binding: 'ASSETS', bucket_name: 'x-assets' }];
+  assert.ok(wantBindings(t, 'live').includes('r2_bucket ASSETS x-assets'));
+  assert.ok(!wantBindings(t, 'staging').some(b => b.startsWith('r2_bucket ')));
+  t.env.staging.r2_buckets = [{ binding: 'ASSETS', bucket_name: 'x-assets-staging' }];
+  assert.deepEqual(wantBindings(t, 'staging').filter(b => b.startsWith('r2_bucket ')), ['r2_bucket ASSETS x-assets-staging']);
+  assert.ok(!wantBindings(toml, 'live').some(b => b.startsWith('r2_bucket ')));
+});

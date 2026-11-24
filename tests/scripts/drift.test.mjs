@@ -91,6 +91,31 @@ test('release_managed.queue_producers: a listed producer missing on live is note
   assert.equal(r4.code, 0, r4.out); assert.deepEqual(r4.j.problems, []); assert.ok(!r4.j.notes.some(n => n.startsWith('release sets queue')), r4.out);
   pipeline();
 });
+// r2_buckets (v1.0.12): an R2 binding is compared like the others; release_managed.r2 notes one a release adds.
+const R2 = '[[r2_buckets]]\nbinding = "ASSETS"\nbucket_name = "x-assets"\n\n';
+test('r2_buckets: compared on live; release_managed.r2 notes a listed one missing on live, unlisted still refused', async () => {
+  writeToml(BASE + R2 + STAGING);
+  pipeline();
+  const has = bindings([{ type: 'r2_bucket', name: 'ASSETS', bucket_name: 'x-assets' }]);
+  let r = await run('live', { bindings: { 'jbx-x': has } });
+  assert.equal(r.code, 0, r.out); assert.deepEqual(r.j.problems, []);
+  r = await run('live', {});
+  assert.equal(r.code, 1); assert.deepEqual(r.j.problems, ['missing on live or different: r2_bucket ASSETS x-assets']);
+  r = await run('live', { bindings: { 'jbx-x': bindings([{ type: 'r2_bucket', name: 'ASSETS', bucket_name: 'other' }]) } });
+  assert.equal(r.code, 1); assert.match(r.j.problems.join(), /r2_bucket ASSETS x-assets/);
+  pipeline({ release_managed: { r2: ['ASSETS'] } });
+  r = await run('live', {});
+  assert.equal(r.code, 0, r.out); assert.deepEqual(r.j.problems, []);
+  assert.ok(r.j.notes.includes('release sets r2_bucket ASSETS x-assets'), r.out);
+  r = await run('live', { bindings: { 'jbx-x': has } });
+  assert.equal(r.code, 0, r.out); assert.ok(!r.j.notes.some(n => n.startsWith('release sets r2_bucket')), r.out);
+  pipeline({ release_managed: { r2: ['OTHER'] } });
+  r = await run('live', {});
+  assert.equal(r.code, 1); assert.deepEqual(r.j.problems, ['missing on live or different: r2_bucket ASSETS x-assets']);
+  r = await run('staging', {});
+  assert.equal(r.code, 0, r.out); assert.deepEqual(r.j.problems, []);
+  pipeline();
+});
 test('a queue the toml names does not exist: refused, named, on staging too', async () => {
   pipeline(); writeToml(BASE + QUEUES + STAGING + SQUEUES);
   const r = await run('staging', { queues: [] });
