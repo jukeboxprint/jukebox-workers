@@ -1,5 +1,14 @@
 # Changes
 
+## v1.0.12 (2026-11-24)
+
+- R2 bucket bindings (`[[r2_buckets]]`, for jbx-layout's asset store). `scripts/door/worker.mjs` wantBindings carries
+  `r2_bucket <binding> <bucket>`, never inherited by an env (wrangler: not inheritable), like Hyperdrive; `drift.mjs` and
+  `proof.mjs` compare it like the others. New optional pipeline.json key `release_managed.r2`: R2 binding names a release
+  adds to a live Worker, noted ("release sets r2_bucket ...") instead of refused, as `queue_producers` in v1.0.11. Any
+  other difference is refused on live as before. A Worker whose toml names no R2 bucket reads and answers as v1.0.11.
+  The pipeline never creates buckets: create them on Tyler's word.
+
 ## v1.0.11 (2026-11-10)
 
 - `scripts/door/drift.mjs`: optional pipeline.json key `release_managed.queue_producers`, a list of Queue producer
